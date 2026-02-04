@@ -18,35 +18,21 @@ from services.task_runtime import (
 from services.scheduler import scheduler_service
 from dependencies import get_fleet, get_bio_sensor_client
 
-# Configure logging for executable - use AppData to avoid startup folder issues
-def get_log_file_path():
-    """Get log file path in AppData to avoid startup folder permission issues."""
-    if getattr(sys, 'frozen', False):
-        appdata = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-        log_dir = os.path.join(appdata, 'BioPatrol', 'logs')
-        os.makedirs(log_dir, exist_ok=True)
-        return os.path.join(log_dir, 'kachaka_debug.log')
-    else:
-        return 'kachaka_debug.log'
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(get_log_file_path(), mode='w')
     ]
 )
-logger = logging.getLogger("kachaka.main")
+logger = logging.getLogger("bio_patrol.main")
 
 def get_project_root():
     """Get project root directory. From src/backend/main.py → up 3 levels to project root."""
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def get_resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller"""
+    """Get absolute path to resource relative to project root."""
     return os.path.join(get_project_root(), relative_path)
 
 @asynccontextmanager
@@ -105,7 +91,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Bio Patrol",
-    description="Kachaka robot bio-sensor patrol system",
+    description="Bio-sensor patrol system",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -125,34 +111,3 @@ app.include_router(tasks.router)
 app.include_router(kachaka.router)
 app.include_router(settings_router.router)
 app.include_router(bio_sensor.router)
-
-if __name__ == "__main__":
-    try:
-        logger.info("Starting Bio Patrol...")
-        logger.info(f"Python executable: {sys.executable}")
-        logger.info(f"Working directory: {os.getcwd()}")
-        logger.info(f"PyInstaller frozen: {getattr(sys, 'frozen', False)}")
-
-        import uvicorn
-        from settings.config import get_runtime_settings, get_port
-
-        port = get_port()
-        logger.info(f"Starting server on port {port}")
-
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=port,
-            log_level="info"
-        )
-    except ImportError as e:
-        logger.error(f"Import error: {e}")
-        logger.error("Missing required module - check PyInstaller hidden imports")
-        logger.error(traceback.format_exc())
-        input("Press Enter to exit...")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Fatal error starting application: {e}")
-        logger.error(traceback.format_exc())
-        input("Press Enter to exit...")
-        sys.exit(1)

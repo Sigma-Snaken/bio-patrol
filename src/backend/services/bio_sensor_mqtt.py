@@ -9,27 +9,21 @@ import asyncio
 import sqlite3
 from datetime import datetime
 import uuid
-import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BioSensorMQTTClient")
+
 class BioSensorMQTTClient:
     def __init__(self, broker="localhost", port=1803, topic="/my/default/channel", db_path=None):
         self.broker = broker
         self.port = port
         self.topic = topic
         if db_path is None:
-            if getattr(sys, 'frozen', False):
-                appdata = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-                data_dir = os.path.join(appdata, 'BioPatrol', 'data')
-                os.makedirs(data_dir, exist_ok=True)
-                self.db_path = os.path.join(data_dir, "sensor_data.db")
-            else:
-                # From src/backend/services/bio_sensor_mqtt.py → up 4 levels to project root
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-                data_dir = os.path.join(project_root, "data")
-                os.makedirs(data_dir, exist_ok=True)
-                self.db_path = os.path.join(data_dir, "sensor_data.db")
+            # From src/backend/services/bio_sensor_mqtt.py → up 4 levels to project root
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            data_dir = os.path.join(project_root, "data")
+            os.makedirs(data_dir, exist_ok=True)
+            self.db_path = os.path.join(data_dir, "sensor_data.db")
         else:
             self.db_path = db_path
 

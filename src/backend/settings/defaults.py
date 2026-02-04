@@ -1,5 +1,5 @@
 """
-Default settings for the Kachaka Care system.
+Default settings for the Bio Patrol system.
 """
 
 DEFAULT_SETTINGS = {

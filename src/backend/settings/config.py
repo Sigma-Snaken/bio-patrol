@@ -1,14 +1,10 @@
 import os
-import sys
 
 
 def get_settings_dir():
     """Get the path to the data/config directory (JSON configs).
     From src/backend/settings/config.py → up 4 levels to project root."""
-    if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     return os.path.join(base_path, "data", "config")
 
 
