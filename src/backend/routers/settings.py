@@ -654,6 +654,19 @@ async def fetch_maps_from_robot():
 
     fleet = get_fleet()
 
+    # 0. Clear old map data
+    if os.path.isdir(MAPS_DIR):
+        for fname in os.listdir(MAPS_DIR):
+            fpath = os.path.join(MAPS_DIR, fname)
+            if os.path.isfile(fpath):
+                os.remove(fpath)
+
+    # Clear active_map since old files are gone
+    current_settings = load_json(SETTINGS_FILE, {})
+    if current_settings.get("active_map"):
+        current_settings["active_map"] = ""
+        save_json(SETTINGS_FILE, current_settings)
+
     # 1. Get list of maps on robot
     try:
         map_list = await fleet.get_map_list("kachaka")
