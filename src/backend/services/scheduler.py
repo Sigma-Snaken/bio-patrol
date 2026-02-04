@@ -106,7 +106,7 @@ class TaskSchedulerService:
         """Execute a scheduled patrol by creating a patrol task."""
         logger.info(f"Scheduled patrol triggered: {schedule_id}")
         try:
-            from settings.config import PATROL_FILE, BEDS_FILE
+            from settings.config import PATROL_FILE, BEDS_FILE, get_runtime_settings
             from settings.defaults import DEFAULT_PATROL, DEFAULT_BEDS
             from utils.json_io import load_json
             from common_types import Task, TaskStep, TaskStatus, StepStatus, generate_task_id
@@ -114,7 +114,8 @@ class TaskSchedulerService:
 
             patrol_cfg = load_json(PATROL_FILE, DEFAULT_PATROL)
             beds_cfg = load_json(BEDS_FILE, DEFAULT_BEDS)
-            shelf_id = patrol_cfg.get("shelf_id", "S_04")
+            cfg = get_runtime_settings()
+            shelf_id = cfg.get("shelf_id", "S_04")
             beds_order = patrol_cfg.get("beds_order", [])
             beds_map = beds_cfg.get("beds", {})
 

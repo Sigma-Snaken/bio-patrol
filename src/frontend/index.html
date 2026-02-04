@@ -138,7 +138,15 @@
       <div class="action-bar">
         <button class="btn-premium" onclick="startPatrol()">▶ Start Patrol</button>
         <button class="btn-success" onclick="startDemoRun()">▶ Demo Run</button>
-        <button class="btn-secondary" onclick="savePatrolConfig()">Save Config</button>
+        <button class="btn-secondary" onclick="savePatrolConfig()">Save</button>
+        <button class="btn-secondary" onclick="savePatrolPreset()">Save As...</button>
+        <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
+          <select id="patrol-preset-select" onchange="onPresetSelect(this.value)" style="padding:5px 8px;background:var(--panel-light);border:1px solid var(--border-subtle);color:var(--text-primary);font-family:var(--font-mono);font-size:12px;min-width:140px;">
+            <option value="">-- Presets --</option>
+          </select>
+          <button class="btn-success" onclick="setDemoPreset()" title="Set selected preset as Demo route">Set Demo</button>
+          <button class="btn-danger-sm" onclick="deletePatrolPreset()" title="Delete selected preset">✕</button>
+        </div>
       </div>
 
       <div style="padding:16px;overflow-y:auto;height:calc(100% - 52px);">
@@ -156,16 +164,7 @@
           <div id="schedule-list"></div>
         </div>
 
-        <!-- Shelf ID -->
-        <div class="glass-panel">
-          <h3>Shelf Configuration</h3>
-          <div class="form-group">
-            <label>Shelf ID</label>
-            <input type="text" id="patrol-shelf-id" placeholder="e.g. S_04">
-          </div>
-        </div>
-
-        <!-- Patrol Bed Order (nested collapsible rooms/beds) -->
+        <!-- Patrol Bed Order (grouped by room) -->
         <div class="glass-panel">
           <h3>Patrol Route</h3>
           <div id="patrol-route-list">
@@ -291,6 +290,8 @@
               <input type="checkbox" id="setting-mqtt-enabled" style="width:auto;">
               <label for="setting-mqtt-enabled" style="margin:0;cursor:pointer;">Enable MQTT</label>
             </div>
+            <button class="btn-secondary" id="btn-test-mqtt" onclick="testMQTT()">Test Connection</button>
+            <div class="log-display" id="mqtt-test-log"></div>
           </div>
 
           <div class="glass-panel">
@@ -311,11 +312,22 @@
               <label>Valid Status Code</label>
               <input type="number" id="setting-bio-scan-valid-status" placeholder="4">
             </div>
+            <button class="btn-secondary" id="btn-test-bioscan" onclick="testBioScan()">Test Bio-Scan</button>
+            <p class="test-note">Uses saved settings. Save before testing.</p>
+            <div class="log-display" id="bioscan-test-log"></div>
           </div>
         </div>
 
         <!-- RIGHT COLUMN -->
         <div>
+          <div class="glass-panel">
+            <h3>Patrol Settings</h3>
+            <div class="form-group">
+              <label>Shelf ID</label>
+              <input type="text" id="setting-shelf-id" placeholder="e.g. S_04">
+            </div>
+          </div>
+
           <div class="glass-panel">
             <h3>Robot Retry Settings</h3>
             <div class="form-group">
@@ -353,6 +365,14 @@
             <div class="form-group">
               <label>Gemini API Key</label>
               <input type="password" id="setting-gemini-api-key" placeholder="Enter API key">
+            </div>
+          </div>
+
+          <div class="glass-panel">
+            <h3>Map Management</h3>
+            <button class="btn-secondary" id="btn-fetch-map" onclick="fetchMapFromRobot()">Fetch from Robot</button>
+            <div id="map-list-container" style="margin-top:10px;">
+              <p style="color:var(--text-muted);font-size:12px;">No saved maps</p>
             </div>
           </div>
         </div>

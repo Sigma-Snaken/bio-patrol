@@ -40,6 +40,31 @@ class DataService {
     return res.data;
   }
 
+  async getPatrolPresets() {
+    const res = await axios.get('/api/patrol/presets');
+    return res.data;
+  }
+
+  async savePatrolPreset(name) {
+    const res = await axios.post(`/api/patrol/presets/${encodeURIComponent(name)}`);
+    return res.data;
+  }
+
+  async loadPatrolPreset(name) {
+    const res = await axios.post(`/api/patrol/presets/${encodeURIComponent(name)}/load`);
+    return res.data;
+  }
+
+  async deletePatrolPreset(name) {
+    const res = await axios.delete(`/api/patrol/presets/${encodeURIComponent(name)}`);
+    return res.data;
+  }
+
+  async setDemoPreset(name) {
+    const res = await axios.post(`/api/patrol/presets/${encodeURIComponent(name)}/set-demo`);
+    return res.data;
+  }
+
   async getSchedules() {
     const res = await axios.get('/api/schedule');
     return res.data;
@@ -137,6 +162,35 @@ class DataService {
 
   async getRobotMap() {
     const res = await axios.get(`/kachaka/${this.robotId}/map`);
+    return res.data;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MAP MANAGEMENT APIs
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async getMapList() {
+    const res = await axios.get('/api/maps');
+    return res.data;
+  }
+
+  async fetchMapFromRobot() {
+    const res = await axios.post('/api/maps/fetch');
+    return res.data;
+  }
+
+  async setActiveMap(mapId) {
+    const res = await axios.post('/api/maps/active', { map_id: mapId });
+    return res.data;
+  }
+
+  async getActiveMapInfo() {
+    const res = await axios.get('/api/maps/active-info');
+    return res.data;
+  }
+
+  async switchMap(mapId) {
+    const res = await axios.post('/api/maps/switch', { map_id: mapId });
     return res.data;
   }
 

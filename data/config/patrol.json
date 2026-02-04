@@ -1,4 +1,16 @@
 {
-  "shelf_id": "S_04",
-  "beds_order": []
+  "beds_order": [
+    {
+      "bed_key": "101-1",
+      "enabled": true
+    },
+    {
+      "bed_key": "101-2",
+      "enabled": true
+    },
+    {
+      "bed_key": "102-1",
+      "enabled": true
+    }
+  ]
 }

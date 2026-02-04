@@ -1,1 +1,20 @@
-{}
+{
+  "mqtt_broker": "bio-patrol-mqtt",
+  "robot_ip": "192.168.50.133:26400",
+  "mqtt_port": 1883,
+  "mqtt_topic": "/data-test/demo/wisleep-eck/org/201906078",
+  "mqtt_enabled": false,
+  "bio_scan_wait_time": 10,
+  "bio_scan_retry_count": 19,
+  "bio_scan_initial_wait": 120,
+  "bio_scan_valid_status": 4,
+  "robot_max_retries": 3,
+  "robot_retry_base_delay": 2,
+  "robot_retry_max_delay": 10,
+  "enable_telegram": false,
+  "telegram_bot_token": "",
+  "telegram_user_id": "",
+  "gemini_api_key": "",
+  "active_map": "73881337-e6e6-49fb-8ef2-a1adb7776c57",
+  "demo_preset": ""
+}

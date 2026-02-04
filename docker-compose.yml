@@ -16,6 +16,8 @@ services:
     container_name: bio-patrol-mqtt
     ports:
       - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     networks:
       - bio-patrol-net
 

@@ -208,9 +208,37 @@ class FleetAPI:
         client = self.manager.get_robot_client(robot_id)
         if not client:
             raise ValueError(f"Robot {robot_id} not found")
-        
+
         res = await client.get_png_map()
         return res
+
+    async def get_map_list(self, robot_id: str):
+        """Get list of available maps on the robot"""
+        client = self.manager.get_robot_client(robot_id)
+        if not client:
+            raise ValueError(f"Robot {robot_id} not found")
+        return await client.get_map_list()
+
+    async def get_current_map_id(self, robot_id: str) -> str:
+        """Get the currently active map ID on the robot"""
+        client = self.manager.get_robot_client(robot_id)
+        if not client:
+            raise ValueError(f"Robot {robot_id} not found")
+        return await client.get_current_map_id()
+
+    async def switch_map(self, robot_id: str, map_id: str):
+        """Switch robot to a different map"""
+        client = self.manager.get_robot_client(robot_id)
+        if not client:
+            raise ValueError(f"Robot {robot_id} not found")
+        return await client.switch_map(map_id)
+
+    async def load_map_preview(self, robot_id: str, map_id: str):
+        """Load PNG preview for a specific map (without switching)"""
+        client = self.manager.get_robot_client(robot_id)
+        if not client:
+            raise ValueError(f"Robot {robot_id} not found")
+        return await client.load_map_preview(map_id)
 
     async def export_map(self, robot_id: str):
         """Export robot map""" 

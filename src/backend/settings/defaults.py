@@ -20,6 +20,9 @@ DEFAULT_SETTINGS = {
     "telegram_bot_token": "",
     "telegram_user_id": "",
     "gemini_api_key": "",
+    "active_map": "",
+    "shelf_id": "S_04",
+    "demo_preset": "",
 }
 
 DEFAULT_BEDS = {
@@ -30,7 +33,6 @@ DEFAULT_BEDS = {
 }
 
 DEFAULT_PATROL = {
-    "shelf_id": "S_04",
     "beds_order": [],
 }
 

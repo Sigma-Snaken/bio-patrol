@@ -4,14 +4,18 @@ Handles system configuration, beds, patrol, and schedule management.
 """
 import uuid
 import asyncio
+import json
+import os
 import logging
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 
 from settings.config import (
     SETTINGS_FILE, BEDS_FILE, PATROL_FILE, SCHEDULE_FILE,
-    get_runtime_settings,
+    get_runtime_settings, get_settings_dir,
 )
 from settings.defaults import DEFAULT_SETTINGS, DEFAULT_BEDS, DEFAULT_PATROL, DEFAULT_SCHEDULE
 from utils.json_io import load_json, save_json
@@ -21,6 +25,9 @@ from common_types import (
 from services.task_runtime import tasks_db, global_queue
 
 logger = logging.getLogger(__name__)
+
+# Maps directory (sibling to data/config)
+MAPS_DIR = os.path.join(os.path.dirname(get_settings_dir()), "maps")
 
 router = APIRouter(prefix="/api", tags=["Settings & Config"])
 
@@ -84,6 +91,80 @@ async def save_patrol(body: dict):
     return {"status": "ok", "data": body}
 
 
+# --- Patrol presets (save-as / load) ---
+PATROL_PRESETS_DIR = os.path.join(get_settings_dir(), "patrol_presets")
+
+
+@router.get("/patrol/presets")
+async def list_patrol_presets():
+    """List saved patrol presets."""
+    os.makedirs(PATROL_PRESETS_DIR, exist_ok=True)
+    cfg = get_runtime_settings()
+    demo_preset = cfg.get("demo_preset", "")
+    presets = []
+    for fname in sorted(os.listdir(PATROL_PRESETS_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(PATROL_PRESETS_DIR, fname)
+        data = load_json(fpath, {})
+        name = fname[:-5]  # strip .json
+        enabled = [b for b in data.get("beds_order", []) if b.get("enabled")]
+        presets.append({"name": name, "beds_count": len(enabled)})
+    return {"presets": presets, "demo_preset": demo_preset}
+
+
+@router.post("/patrol/presets/{name}")
+async def save_patrol_preset(name: str):
+    """Save current patrol.json as a named preset."""
+    os.makedirs(PATROL_PRESETS_DIR, exist_ok=True)
+    current = load_json(PATROL_FILE, DEFAULT_PATROL)
+    safe_name = "".join(c for c in name if c.isalnum() or c in "-_ ").strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid preset name")
+    fpath = os.path.join(PATROL_PRESETS_DIR, f"{safe_name}.json")
+    save_json(fpath, current)
+    return {"status": "ok", "name": safe_name}
+
+
+@router.post("/patrol/presets/{name}/load")
+async def load_patrol_preset(name: str):
+    """Load a named preset into patrol.json."""
+    fpath = os.path.join(PATROL_PRESETS_DIR, f"{name}.json")
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    data = load_json(fpath, {})
+    save_json(PATROL_FILE, data)
+    return {"status": "ok", "data": data}
+
+
+@router.delete("/patrol/presets/{name}")
+async def delete_patrol_preset(name: str):
+    """Delete a named patrol preset."""
+    fpath = os.path.join(PATROL_PRESETS_DIR, f"{name}.json")
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    os.remove(fpath)
+    # Clear demo_preset if it was the deleted one
+    cfg = get_runtime_settings()
+    if cfg.get("demo_preset") == name:
+        current = load_json(SETTINGS_FILE, {})
+        current["demo_preset"] = ""
+        save_json(SETTINGS_FILE, current)
+    return {"status": "ok"}
+
+
+@router.post("/patrol/presets/{name}/set-demo")
+async def set_demo_preset(name: str):
+    """Set a named preset as the demo route."""
+    fpath = os.path.join(PATROL_PRESETS_DIR, f"{name}.json")
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Preset not found")
+    current = load_json(SETTINGS_FILE, {})
+    current["demo_preset"] = name
+    save_json(SETTINGS_FILE, current)
+    return {"status": "ok", "demo_preset": name}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SCHEDULE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -145,9 +226,21 @@ async def start_patrol(req: PatrolStartRequest):
     - patrol: move_shelf + bio_scan per enabled bed
     - demo: move_shelf + wait(5s) per enabled bed (no bio_scan)
     """
-    patrol_cfg = load_json(PATROL_FILE, DEFAULT_PATROL)
+    cfg = get_runtime_settings()
+    shelf_id = cfg.get("shelf_id", "S_04")
+
+    # Demo mode: load from demo preset if configured
+    if req.mode == "demo":
+        demo_name = cfg.get("demo_preset", "")
+        if demo_name:
+            demo_path = os.path.join(PATROL_PRESETS_DIR, f"{demo_name}.json")
+            patrol_cfg = load_json(demo_path, DEFAULT_PATROL)
+        else:
+            patrol_cfg = load_json(PATROL_FILE, DEFAULT_PATROL)
+    else:
+        patrol_cfg = load_json(PATROL_FILE, DEFAULT_PATROL)
+
     beds_cfg = load_json(BEDS_FILE, DEFAULT_BEDS)
-    shelf_id = patrol_cfg.get("shelf_id", "S_04")
     beds_order = patrol_cfg.get("beds_order", [])
     beds_map = beds_cfg.get("beds", {})
 
@@ -249,3 +342,471 @@ async def recover_shelf(req: RecoverShelfRequest):
     except Exception as e:
         logger.error(f"Shelf recovery failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MQTT TEST (SSE)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _sse_event(msg: str, level: str = "info") -> str:
+    """Format a Server-Sent Event line."""
+    payload = json.dumps({"msg": msg, "level": level})
+    return f"data: {payload}\n\n"
+
+
+@router.get("/settings/test-mqtt")
+async def test_mqtt():
+    """Test MQTT connection — streams log lines via SSE."""
+    cfg = get_runtime_settings()
+    broker = cfg.get("mqtt_broker", "localhost")
+    port = int(cfg.get("mqtt_port", 1883))
+    topic = cfg.get("mqtt_topic", "")
+
+    async def generate():
+        import paho.mqtt.client as mqtt
+
+        received = []
+        connected_event = asyncio.Event()
+        connect_error = {}
+
+        def on_connect(client, userdata, flags, rc, properties=None):
+            if rc == 0:
+                connected_event.set()
+            else:
+                connect_error["rc"] = rc
+                connected_event.set()
+
+        def on_message(client, userdata, msg):
+            try:
+                payload = msg.payload.decode()
+                received.append(payload)
+            except Exception:
+                received.append(str(msg.payload))
+
+        yield _sse_event(f"Connecting to {broker}:{port}...")
+        await asyncio.sleep(0)
+
+        client = mqtt.Client(protocol=mqtt.MQTTv31)
+        client.on_connect = on_connect
+        client.on_message = on_message
+
+        try:
+            await asyncio.to_thread(client.connect, broker, port, 60)
+            client.loop_start()
+        except Exception as e:
+            yield _sse_event(f"Connection failed: {e}", "error")
+            yield _sse_event("Test complete.", "done")
+            return
+
+        # Wait for connect callback (up to 5s)
+        try:
+            await asyncio.wait_for(connected_event.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            yield _sse_event("Connection timed out (5s)", "error")
+            client.loop_stop()
+            client.disconnect()
+            yield _sse_event("Test complete.", "done")
+            return
+
+        if connect_error:
+            yield _sse_event(f"Connection failed: rc={connect_error['rc']}", "error")
+            client.loop_stop()
+            client.disconnect()
+            yield _sse_event("Test complete.", "done")
+            return
+
+        yield _sse_event("Connected successfully")
+
+        yield _sse_event(f"Subscribing to {topic}...")
+        await asyncio.to_thread(client.subscribe, topic)
+        yield _sse_event("Subscribed. Waiting for data (15s timeout)...")
+
+        # Wait up to 15s for data, checking every second
+        for i in range(15):
+            await asyncio.sleep(1)
+            if received:
+                break
+            if i % 5 == 4:
+                yield _sse_event(f"  Still waiting... ({i + 1}s)")
+
+        if received:
+            yield _sse_event(f"Received {len(received)} message(s):")
+            for msg_str in received[:5]:
+                # Truncate long messages
+                display = msg_str[:300] + ("..." if len(msg_str) > 300 else "")
+                yield _sse_event(f"  {display}")
+        else:
+            yield _sse_event("No data received within timeout", "warn")
+
+        yield _sse_event("Disconnecting...")
+        client.loop_stop()
+        client.disconnect()
+        yield _sse_event("Test complete.", "done")
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BIO-SCAN TEST (SSE)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/settings/test-bio-scan")
+async def test_bio_scan():
+    """Simulate a bio-scan cycle using saved settings — streams log lines via SSE."""
+    cfg = get_runtime_settings()
+    broker = cfg.get("mqtt_broker", "localhost")
+    port = int(cfg.get("mqtt_port", 1883))
+    topic = cfg.get("mqtt_topic", "")
+    wait_time = int(cfg.get("bio_scan_wait_time", 10))
+    retry_count = int(cfg.get("bio_scan_retry_count", 19))
+    initial_wait = int(cfg.get("bio_scan_initial_wait", 120))
+    valid_status = int(cfg.get("bio_scan_valid_status", 4))
+
+    async def generate():
+        import paho.mqtt.client as mqtt
+
+        yield _sse_event(
+            f"Config: initial_wait={initial_wait}s, retry_count={retry_count}, "
+            f"wait_time={wait_time}s, valid_status={valid_status}"
+        )
+
+        latest_data = {}
+        connected_event = asyncio.Event()
+        connect_error = {}
+
+        def on_connect(client, userdata, flags, rc, properties=None):
+            if rc == 0:
+                connected_event.set()
+            else:
+                connect_error["rc"] = rc
+                connected_event.set()
+
+        def on_message(client, userdata, msg):
+            try:
+                latest_data["value"] = json.loads(msg.payload.decode())
+            except Exception:
+                pass
+
+        yield _sse_event(f"Connecting to MQTT {broker}:{port}...")
+        await asyncio.sleep(0)
+
+        client = mqtt.Client(protocol=mqtt.MQTTv31)
+        client.on_connect = on_connect
+        client.on_message = on_message
+
+        try:
+            await asyncio.to_thread(client.connect, broker, port, 60)
+            client.loop_start()
+        except Exception as e:
+            yield _sse_event(f"MQTT connection failed: {e}", "error")
+            yield _sse_event("Test complete.", "done")
+            return
+
+        try:
+            await asyncio.wait_for(connected_event.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            yield _sse_event("MQTT connection timed out", "error")
+            client.loop_stop()
+            client.disconnect()
+            yield _sse_event("Test complete.", "done")
+            return
+
+        if connect_error:
+            yield _sse_event(f"MQTT connection failed: rc={connect_error['rc']}", "error")
+            client.loop_stop()
+            client.disconnect()
+            yield _sse_event("Test complete.", "done")
+            return
+
+        yield _sse_event("MQTT connected")
+        await asyncio.to_thread(client.subscribe, topic)
+        yield _sse_event(f"Subscribed to {topic}")
+
+        # Initial wait with countdown
+        yield _sse_event(f"Starting initial wait ({initial_wait}s)...")
+        for elapsed in range(initial_wait):
+            await asyncio.sleep(1)
+            remaining = initial_wait - elapsed - 1
+            if remaining > 0 and remaining % 10 == 0:
+                yield _sse_event(f"  Initial wait: {remaining}s remaining...")
+
+        yield _sse_event("Initial wait complete. Starting scan retries...")
+
+        # Retry loop
+        valid_data = None
+        for i in range(retry_count):
+            yield _sse_event(f"Retry {i + 1}/{retry_count}: checking sensor data...")
+
+            data_snapshot = latest_data.get("value")
+            if data_snapshot and "records" in data_snapshot:
+                for record in data_snapshot["records"]:
+                    status = record.get("status")
+                    bpm = record.get("bpm", 0)
+                    rpm = record.get("rpm", 0)
+                    is_valid = (status == valid_status and bpm > 0 and rpm > 0)
+                    label = "VALID" if is_valid else "invalid"
+                    yield _sse_event(f"  Status={status}, BPM={bpm}, RPM={rpm} -> {label}")
+                    if is_valid and valid_data is None:
+                        valid_data = record
+                if valid_data:
+                    yield _sse_event("Valid measurement found!", "success")
+                    break
+            else:
+                yield _sse_event("  No MQTT data received")
+
+            if i + 1 < retry_count:
+                yield _sse_event(f"  Waiting {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+        if valid_data:
+            yield _sse_event(
+                f"Result: Valid data — BPM={valid_data.get('bpm')}, "
+                f"RPM={valid_data.get('rpm')}, Status={valid_data.get('status')}",
+                "success",
+            )
+        else:
+            yield _sse_event("Result: No valid data after all retries", "warn")
+
+        client.loop_stop()
+        client.disconnect()
+        yield _sse_event("Test complete.", "done")
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAP MANAGEMENT
+# Uses kachaka-api: get_map_list, load_map_preview, switch_map
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _save_map_png_and_meta(map_pb, robot_map_id: str, locations: list, entry_name: str = "") -> dict:
+    """Save a protobuf Map to data/maps/ as PNG + JSON. Returns metadata dict."""
+    import base64
+    from google.protobuf.json_format import MessageToDict
+
+    map_dict = MessageToDict(map_pb, preserving_proto_field_name=True)
+    resolution = map_dict.get("resolution", 0.05)
+    width = map_dict.get("width", 0)
+    height = map_dict.get("height", 0)
+    map_name = entry_name or map_dict.get("name", "robot_map")
+    origin_dict = map_dict.get("origin", {})
+
+    png_b64 = map_dict.get("data", "")
+    png_bytes = base64.b64decode(png_b64) if png_b64 else b""
+    if not png_bytes:
+        return None
+
+    # Use robot map id as local file id (sanitise for filesystem)
+    safe_id = robot_map_id.replace("/", "_").replace("\\", "_")
+    os.makedirs(MAPS_DIR, exist_ok=True)
+
+    with open(os.path.join(MAPS_DIR, f"{safe_id}.png"), "wb") as f:
+        f.write(png_bytes)
+
+    meta = {
+        "robot_map_id": robot_map_id,
+        "name": map_name,
+        "resolution": resolution,
+        "width": width,
+        "height": height,
+        "origin": {"x": origin_dict.get("x", 0), "y": origin_dict.get("y", 0)},
+        "locations": locations,
+        "timestamp": datetime.now().isoformat(),
+    }
+    save_json(os.path.join(MAPS_DIR, f"{safe_id}.json"), meta)
+    return {**meta, "id": safe_id}
+
+
+@router.get("/maps")
+async def list_maps():
+    """List all locally saved maps + active map."""
+    cfg = get_runtime_settings()
+    active_map = cfg.get("active_map", "")
+
+    maps = []
+    os.makedirs(MAPS_DIR, exist_ok=True)
+    for fname in sorted(os.listdir(MAPS_DIR)):
+        if fname.endswith(".json"):
+            meta_path = os.path.join(MAPS_DIR, fname)
+            try:
+                meta = load_json(meta_path, {})
+                map_id = fname.replace(".json", "")
+                maps.append({
+                    "id": map_id,
+                    "name": meta.get("name", map_id),
+                    "robot_map_id": meta.get("robot_map_id", ""),
+                    "timestamp": meta.get("timestamp", ""),
+                    "resolution": meta.get("resolution"),
+                    "width": meta.get("width"),
+                    "height": meta.get("height"),
+                })
+            except Exception:
+                pass
+
+    return {"active_map": active_map, "maps": maps}
+
+
+@router.post("/maps/fetch")
+async def fetch_maps_from_robot():
+    """Fetch all maps from robot via get_map_list + load_map_preview and save locally."""
+    from dependencies import get_fleet
+    from google.protobuf.json_format import MessageToDict
+
+    fleet = get_fleet()
+
+    # 1. Get list of maps on robot
+    try:
+        map_list = await fleet.get_map_list("kachaka")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to get map list: {e}")
+
+    if not map_list:
+        return {"status": "ok", "maps": [], "message": "No maps on robot"}
+
+    # 2. Get current map id
+    try:
+        current_map_id = await fleet.get_current_map_id("kachaka")
+    except Exception:
+        current_map_id = ""
+
+    # 3. Get locations (for current map)
+    locations = []
+    try:
+        loc_res = await fleet.get_locations("kachaka")
+        if loc_res:
+            for loc in loc_res:
+                loc_d = MessageToDict(loc, preserving_proto_field_name=True) if hasattr(loc, "DESCRIPTOR") else loc
+                locations.append({
+                    "id": loc_d.get("id", ""),
+                    "name": loc_d.get("name", ""),
+                    "pose": loc_d.get("pose", {}),
+                })
+    except Exception:
+        pass
+
+    # 4. For each map, load preview and save PNG + metadata
+    saved = []
+    for entry in map_list:
+        entry_d = MessageToDict(entry, preserving_proto_field_name=True) if hasattr(entry, "DESCRIPTOR") else entry
+        robot_map_id = entry_d.get("id", "")
+        entry_name = entry_d.get("name", "")
+        if not robot_map_id:
+            continue
+
+        try:
+            map_pb = await fleet.load_map_preview("kachaka", robot_map_id)
+        except Exception as e:
+            logger.warning(f"load_map_preview error for {robot_map_id}: {e}")
+            continue
+
+        # Attach locations only for the current map
+        locs = locations if robot_map_id == current_map_id else []
+        meta = _save_map_png_and_meta(map_pb, robot_map_id, locs, entry_name)
+        if meta:
+            saved.append({
+                "id": meta["id"],
+                "name": meta["name"],
+                "robot_map_id": robot_map_id,
+                "timestamp": meta["timestamp"],
+                "resolution": meta["resolution"],
+                "width": meta["width"],
+                "height": meta["height"],
+            })
+
+    return {"status": "ok", "current_robot_map": current_map_id, "maps": saved}
+
+
+class SwitchMapRequest(BaseModel):
+    map_id: str  # local map id (filename without extension)
+
+
+@router.post("/maps/switch")
+async def switch_map(req: SwitchMapRequest):
+    """Switch the robot to a different map and set it as Dashboard active map."""
+    from dependencies import get_fleet
+    from google.protobuf.json_format import MessageToDict
+
+    meta_path = os.path.join(MAPS_DIR, f"{req.map_id}.json")
+    meta = load_json(meta_path, None)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Map '{req.map_id}' not found")
+
+    robot_map_id = meta.get("robot_map_id", "")
+    if not robot_map_id:
+        raise HTTPException(status_code=400, detail="Map has no robot_map_id — cannot switch")
+
+    fleet = get_fleet()
+
+    # Switch map on robot
+    try:
+        result = await fleet.switch_map("kachaka", robot_map_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"switch_map failed: {e}")
+
+    result_d = MessageToDict(result, preserving_proto_field_name=True) if hasattr(result, "DESCRIPTOR") else result
+    if not result_d.get("success", False):
+        raise HTTPException(
+            status_code=502,
+            detail=f"switch_map error: code {result_d.get('error_code')}",
+        )
+
+    # Set as active map in settings
+    current = load_json(SETTINGS_FILE, {})
+    current["active_map"] = req.map_id
+    save_json(SETTINGS_FILE, current)
+
+    return {"status": "ok", "active_map": req.map_id, "robot_map_id": robot_map_id}
+
+
+class SetActiveMapRequest(BaseModel):
+    map_id: str
+
+
+@router.post("/maps/active")
+async def set_active_map(req: SetActiveMapRequest):
+    """Set active map for Dashboard display only (no robot switch)."""
+    meta_path = os.path.join(MAPS_DIR, f"{req.map_id}.json")
+    if not os.path.exists(meta_path):
+        raise HTTPException(status_code=404, detail=f"Map '{req.map_id}' not found")
+
+    current = load_json(SETTINGS_FILE, {})
+    current["active_map"] = req.map_id
+    save_json(SETTINGS_FILE, current)
+    return {"status": "ok", "active_map": req.map_id}
+
+
+@router.get("/maps/active-info")
+async def get_active_map_info():
+    """Return the active map's metadata (or 404 if none set)."""
+    cfg = get_runtime_settings()
+    map_id = cfg.get("active_map", "")
+    if not map_id:
+        raise HTTPException(status_code=404, detail="No active map set")
+
+    meta_path = os.path.join(MAPS_DIR, f"{map_id}.json")
+    meta = load_json(meta_path, None)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Map metadata not found: {map_id}")
+
+    return {
+        "status": "ok",
+        "map_id": map_id,
+        "name": meta.get("name", ""),
+        "resolution": meta.get("resolution", 0.05),
+        "width": meta.get("width", 0),
+        "height": meta.get("height", 0),
+        "origin": meta.get("origin", {"x": 0, "y": 0}),
+        "locations": meta.get("locations", []),
+    }
+
+
+@router.get("/maps/{map_id}/image")
+async def get_map_image(map_id: str):
+    """Serve a saved map PNG file."""
+    png_path = os.path.join(MAPS_DIR, f"{map_id}.png")
+    if not os.path.exists(png_path):
+        raise HTTPException(status_code=404, detail=f"Map image not found: {map_id}")
+
+    with open(png_path, "rb") as f:
+        png_bytes = f.read()
+    return Response(content=png_bytes, media_type="image/png")

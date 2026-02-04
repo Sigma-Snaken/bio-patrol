@@ -204,9 +204,9 @@ async function recoverShelf() {
   if (statusEl) statusEl.textContent = 'Recovering...';
 
   try {
-    // Get shelf_id from patrol config
-    const patrol = await dataService.getPatrol();
-    const shelfId = patrol?.shelf_id || 'S_04';
+    // Get shelf_id from settings
+    const settings = await dataService.getSettings();
+    const shelfId = settings?.shelf_id || 'S_04';
 
     // Get the shelf-dropped task for location info
     const shelfDropTask = tasks.find(t => t.status === 'shelf_dropped');
@@ -346,6 +346,22 @@ let mapState = {
   robotPos: null, robotTheta: 0, targetTheta: 0,
 };
 
+async function loadMapConfig() {
+  try {
+    const res = await dataService.getActiveMapInfo();
+    if (res.status === 'ok') {
+      gMapDesc.w = res.width;
+      gMapDesc.h = res.height;
+      gMapDesc.origin = res.origin;
+      gMapDesc.resolution = res.resolution;
+      return `/api/maps/${res.map_id}/image`;
+    }
+  } catch (e) {
+    // No active map or error — use fallback
+  }
+  return 'vac_map.png';
+}
+
 function initMap() {
   const container = document.getElementById('map-container');
   const canvas = document.getElementById('map-canvas');
@@ -360,15 +376,26 @@ function initMap() {
   mapState.view.tx = w / 2 - gMapDesc.w / 2;
   mapState.view.ty = h / 2 - gMapDesc.h / 2;
 
-  // Load map image
-  const img = new Image();
-  img.src = 'vac_map.png';
-  img.onload = () => {
-    mapState.img = img;
-    const loading = document.getElementById('map-loading');
-    if (loading) loading.style.display = 'none';
-    drawMap();
-  };
+  // Load map image (from active map or fallback)
+  loadMapConfig().then(mapSrc => {
+    const img = new Image();
+    img.src = mapSrc;
+    img.onload = () => {
+      // Update view centering with possibly-updated gMapDesc
+      mapState.view.tx = w / 2 - gMapDesc.w / 2;
+      mapState.view.ty = h / 2 - gMapDesc.h / 2;
+      mapState.img = img;
+      const loading = document.getElementById('map-loading');
+      if (loading) loading.style.display = 'none';
+      drawMap();
+    };
+    img.onerror = () => {
+      // If active map image fails, try fallback
+      if (mapSrc !== 'vac_map.png') {
+        img.src = 'vac_map.png';
+      }
+    };
+  });
 
   // Pan & zoom events
   canvas.style.cursor = 'grab';
@@ -504,11 +531,6 @@ function drawMap() {
     ctx.drawImage(img, 0, 0, gMapDesc.w, gMapDesc.h);
   }
 
-  // Draw labeled areas
-  drawArea(ctx, { x: 595, y: 170, w: 60, h: 25, theta: 0, fillColor: '#0099ff', name: '物流區' });
-  drawArea(ctx, { x: 555, y: 110, w: 50, h: 20, theta: -Math.PI / 2, fillColor: '#ff0000', name: '櫃台' });
-  drawArea(ctx, { x: 580, y: 480, w: 60, h: 20, theta: Math.PI / 6, fillColor: '#00ff00', name: '護理站' });
-
   // Draw robot
   if (robotData.pose) {
     const pos = tfROS2Canvas(gMapDesc, robotData.pose);
@@ -545,26 +567,6 @@ function drawMap() {
     }
   }
 
-  ctx.restore();
-}
-
-function drawArea(ctx, area) {
-  ctx.save();
-  ctx.globalAlpha = 0.5;
-  ctx.translate(area.x, area.y);
-  ctx.rotate(area.theta || 0);
-  ctx.fillStyle = area.fillColor;
-  ctx.fillRect(-area.w / 2, -area.h / 2, area.w, area.h);
-  ctx.restore();
-
-  ctx.save();
-  ctx.translate(area.x, area.y);
-  ctx.rotate(area.theta || 0);
-  ctx.font = '18px Arial';
-  ctx.fillStyle = '#000';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(area.name, 0, 0);
   ctx.restore();
 }
 
@@ -617,15 +619,14 @@ async function loadPatrolConfig() {
     bedsConfig = beds;
     scheduleConfig = schedule;
 
-    // Shelf ID
-    const shelfInput = document.getElementById('patrol-shelf-id');
-    if (shelfInput) shelfInput.value = patrol.shelf_id || '';
-
     // Render schedule list
     renderScheduleList();
 
     // Render patrol route
     renderPatrolRoute();
+
+    // Load preset dropdown
+    refreshPatrolPresets();
   } catch (e) {
     console.error('Failed to load patrol config:', e);
   }
@@ -705,68 +706,175 @@ function renderPatrolRoute() {
   const bedsOrder = patrolConfig.beds_order || [];
   const bedsMap = bedsConfig.beds || {};
 
-  // Group beds by room
+  // Build a lookup: bed_key → entry in beds_order
+  const orderLookup = {};
+  bedsOrder.forEach(entry => {
+    orderLookup[entry.bed_key] = entry;
+  });
+
+  // Group ALL beds from bedsConfig by room
   const roomGroups = {};
-  bedsOrder.forEach((entry, idx) => {
-    const bedInfo = bedsMap[entry.bed_key] || {};
-    const room = bedInfo.room || entry.bed_key.split('-')[0];
+  Object.keys(bedsMap).forEach(bedKey => {
+    const bed = bedsMap[bedKey];
+    const room = bed.room || bedKey.split('-')[0];
     if (!roomGroups[room]) roomGroups[room] = [];
-    roomGroups[room].push({ ...entry, idx, location_id: bedInfo.location_id || '' });
+    roomGroups[room].push({ bed_key: bedKey, ...bed });
   });
 
   let html = '';
-  Object.keys(roomGroups).sort().forEach(room => {
+  Object.keys(roomGroups).sort((a, b) => parseInt(a) - parseInt(b)).forEach(room => {
     const beds = roomGroups[room];
+    // Sort beds within room by bed number
+    beds.sort((a, b) => (a.bed || 0) - (b.bed || 0));
+
+    // Count enabled beds in this room
+    const enabledCount = beds.filter(b => orderLookup[b.bed_key]?.enabled).length;
+    const roomLabel = `Room ${room}`;
+    const countLabel = enabledCount > 0 ? `${enabledCount}/${beds.length}` : '';
+
+    const bedKeys = beds.map(b => b.bed_key);
+    const bedKeysJson = JSON.stringify(bedKeys).replace(/"/g, '&quot;');
+
     html += `<div class="patrol-room">
-      <div class="patrol-room-header" onclick="this.parentElement.classList.toggle('collapsed')">
-        <span class="room-label">Room ${room}</span>
-        <span class="toggle-icon">▼</span>
+      <div class="patrol-room-header">
+        <span class="room-label" onclick="this.closest('.patrol-room').classList.toggle('collapsed')">${roomLabel}</span>
+        <span class="room-count">${countLabel}</span>
+        <button class="room-btn room-btn-all" onclick="event.stopPropagation();setRoomBeds(${bedKeysJson}, true)" title="Select all">All</button>
+        <button class="room-btn room-btn-none" onclick="event.stopPropagation();setRoomBeds(${bedKeysJson}, false)" title="Deselect all">None</button>
+        <span class="toggle-icon" onclick="this.closest('.patrol-room').classList.toggle('collapsed')">▼</span>
       </div>
       <div class="patrol-bed-list">`;
 
     beds.forEach(bed => {
-      html += `<div class="patrol-bed-item">
-        <input type="checkbox" ${bed.enabled ? 'checked' : ''}
-               onchange="togglePatrolBed(${bed.idx}, this.checked)">
-        <span class="bed-label">${bed.bed_key} (${bed.location_id})</span>
-        <div class="reorder-btns">
-          <button onclick="movePatrolBed(${bed.idx}, -1)" title="Move up">▲</button>
-          <button onclick="movePatrolBed(${bed.idx}, 1)" title="Move down">▼</button>
-        </div>
+      const inOrder = orderLookup[bed.bed_key];
+      const isEnabled = inOrder?.enabled || false;
+      const locLabel = bed.location_id || 'no location';
+      html += `<div class="patrol-bed-item ${isEnabled ? 'enabled' : ''}"
+                    onclick="togglePatrolBed('${bed.bed_key}')">
+        <span class="bed-toggle">${isEnabled ? '✓' : ''}</span>
+        <span class="bed-label">${bed.bed_key}</span>
+        <span class="bed-location">${locLabel}</span>
       </div>`;
     });
 
     html += `</div></div>`;
   });
 
-  container.innerHTML = html || '<p style="color:var(--text-muted);font-size:12px;">No patrol route configured. Set up beds first.</p>';
+  container.innerHTML = html || '<p style="color:var(--text-muted);font-size:12px;">No beds configured. Set up beds in the Beds tab first.</p>';
 }
 
-function togglePatrolBed(idx, enabled) {
-  if (!patrolConfig || !patrolConfig.beds_order[idx]) return;
-  patrolConfig.beds_order[idx].enabled = enabled;
-}
-
-function movePatrolBed(idx, direction) {
+function togglePatrolBed(bedKey) {
   if (!patrolConfig) return;
-  const arr = patrolConfig.beds_order;
-  const newIdx = idx + direction;
-  if (newIdx < 0 || newIdx >= arr.length) return;
-  [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+  if (!patrolConfig.beds_order) patrolConfig.beds_order = [];
+
+  const idx = patrolConfig.beds_order.findIndex(e => e.bed_key === bedKey);
+  if (idx >= 0) {
+    patrolConfig.beds_order[idx].enabled = !patrolConfig.beds_order[idx].enabled;
+  } else {
+    patrolConfig.beds_order.push({ bed_key: bedKey, enabled: true });
+  }
+  renderPatrolRoute();
+}
+
+function setRoomBeds(bedKeys, enabled) {
+  if (!patrolConfig) return;
+  if (!patrolConfig.beds_order) patrolConfig.beds_order = [];
+
+  bedKeys.forEach(bedKey => {
+    const idx = patrolConfig.beds_order.findIndex(e => e.bed_key === bedKey);
+    if (idx >= 0) {
+      patrolConfig.beds_order[idx].enabled = enabled;
+    } else if (enabled) {
+      patrolConfig.beds_order.push({ bed_key: bedKey, enabled: true });
+    }
+  });
   renderPatrolRoute();
 }
 
 async function savePatrolConfig() {
   if (!patrolConfig) return;
 
-  const shelfInput = document.getElementById('patrol-shelf-id');
-  if (shelfInput) patrolConfig.shelf_id = shelfInput.value;
-
   try {
     await dataService.savePatrol(patrolConfig);
     alert('Patrol configuration saved!');
   } catch (e) {
     alert('Failed to save patrol config: ' + e.message);
+  }
+}
+
+// --- Patrol presets ---
+
+async function refreshPatrolPresets() {
+  const sel = document.getElementById('patrol-preset-select');
+  if (!sel) return;
+
+  try {
+    const res = await dataService.getPatrolPresets();
+    const presets = res.presets || [];
+    const demo = res.demo_preset || '';
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">-- Presets --</option>' +
+      presets.map(p => {
+        const isDemo = p.name === demo;
+        const label = isDemo ? `${p.name} (${p.beds_count} beds) [DEMO]` : `${p.name} (${p.beds_count} beds)`;
+        return `<option value="${p.name}">${label}</option>`;
+      }).join('');
+    if (prev) sel.value = prev;
+  } catch (e) {
+    console.error('Failed to load presets:', e);
+  }
+}
+
+async function savePatrolPreset() {
+  const name = prompt('Preset name:');
+  if (!name || !name.trim()) return;
+  if (!patrolConfig) return;
+
+  try {
+    await dataService.savePatrol(patrolConfig);
+    await dataService.savePatrolPreset(name.trim());
+    await refreshPatrolPresets();
+    alert(`Saved as "${name.trim()}"`);
+  } catch (e) {
+    alert('Failed to save preset: ' + (e.response?.data?.detail || e.message));
+  }
+}
+
+async function onPresetSelect(name) {
+  if (!name) return;
+  try {
+    const res = await dataService.loadPatrolPreset(name);
+    patrolConfig = res.data;
+    renderPatrolRoute();
+  } catch (e) {
+    alert('Failed to load preset: ' + (e.response?.data?.detail || e.message));
+  }
+}
+
+async function setDemoPreset() {
+  const sel = document.getElementById('patrol-preset-select');
+  const name = sel?.value;
+  if (!name) { alert('Select a preset first'); return; }
+
+  try {
+    await dataService.setDemoPreset(name);
+    await refreshPatrolPresets();
+  } catch (e) {
+    alert('Failed to set demo: ' + (e.response?.data?.detail || e.message));
+  }
+}
+
+async function deletePatrolPreset() {
+  const sel = document.getElementById('patrol-preset-select');
+  const name = sel?.value;
+  if (!name) { alert('Select a preset first'); return; }
+  if (!confirm(`Delete preset "${name}"?`)) return;
+
+  try {
+    await dataService.deletePatrolPreset(name);
+    await refreshPatrolPresets();
+  } catch (e) {
+    alert('Failed to delete preset: ' + (e.response?.data?.detail || e.message));
   }
 }
 
@@ -798,6 +906,8 @@ function renderBedsUI() {
   renderBedsGrid();
 }
 
+let robotLocations = [];  // populated by fetchRobotLocations
+
 function renderBedsGrid() {
   const container = document.getElementById('beds-grid-container');
   if (!container || !bedsConfig) return;
@@ -817,11 +927,30 @@ function renderBedsGrid() {
     bedNumbers.forEach(bedNum => {
       const key = `${room}-${bedNum}`;
       const bed = beds[key] || {};
-      html += `<div class="bed-card">
-        <div class="bed-key">${key}</div>
-        <input type="text" id="bed-loc-${key}" value="${bed.location_id || ''}"
-               placeholder="Location ID" onchange="updateBedLocationId('${key}', this.value)">
-      </div>`;
+      const currentLoc = bed.location_id || '';
+
+      if (robotLocations.length > 0) {
+        // Dropdown mode
+        const options = robotLocations.map(loc => {
+          const name = loc.name || loc.id || '';
+          const selected = name === currentLoc ? 'selected' : '';
+          return `<option value="${name}" ${selected}>${name}</option>`;
+        }).join('');
+        html += `<div class="bed-card">
+          <div class="bed-key">${key}</div>
+          <select id="bed-loc-${key}" onchange="updateBedLocationId('${key}', this.value)">
+            <option value="">-- Select --</option>
+            ${options}
+          </select>
+        </div>`;
+      } else {
+        // Text input fallback
+        html += `<div class="bed-card">
+          <div class="bed-key">${key}</div>
+          <input type="text" id="bed-loc-${key}" value="${currentLoc}"
+                 placeholder="Location ID" onchange="updateBedLocationId('${key}', this.value)">
+        </div>`;
+      }
     });
 
     html += `</div></div>`;
@@ -875,22 +1004,9 @@ async function fetchRobotLocations() {
       return;
     }
 
-    // Auto-populate location IDs in bed cards
-    locations.forEach(loc => {
-      const name = loc.name || loc.id || '';
-      // Try to match location name to bed key (e.g., "B_101-1" → "101-1")
-      const match = name.match(/B_(\d+-\d+)/);
-      if (match) {
-        const bedKey = match[1];
-        const input = document.getElementById(`bed-loc-${bedKey}`);
-        if (input) {
-          input.value = name;
-          updateBedLocationId(bedKey, name);
-        }
-      }
-    });
-
-    alert(`Fetched ${locations.length} locations from robot`);
+    robotLocations = locations;
+    renderBedsGrid();
+    alert(`Fetched ${locations.length} locations — select from dropdowns`);
   } catch (e) {
     alert('Failed to fetch robot locations: ' + (e.message || e));
   }
@@ -995,6 +1111,7 @@ function exportSensorCSV() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const SETTINGS_MAP = [
+  { id: 'setting-shelf-id', key: 'shelf_id' },
   { id: 'setting-robot-ip', key: 'robot_ip' },
   { id: 'setting-mqtt-broker', key: 'mqtt_broker' },
   { id: 'setting-mqtt-port', key: 'mqtt_port', type: 'number' },
@@ -1028,6 +1145,7 @@ async function loadSettings() {
   } catch (e) {
     console.error('Failed to load settings:', e);
   }
+  loadMapList();
 }
 
 async function saveSettings() {
@@ -1049,5 +1167,148 @@ async function saveSettings() {
     alert('Settings saved!');
   } catch (e) {
     alert('Failed to save settings: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSE LOG STREAMING HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function streamSSE(url, logElId, btnElId) {
+  const logEl = document.getElementById(logElId);
+  const btnEl = document.getElementById(btnElId);
+  if (!logEl) return;
+
+  logEl.textContent = '';
+  logEl.classList.add('visible');
+  if (btnEl) btnEl.disabled = true;
+
+  const evtSource = new EventSource(url);
+
+  evtSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      const line = document.createElement('div');
+      line.textContent = data.msg;
+      if (data.level && data.level !== 'info') {
+        line.className = `log-${data.level}`;
+      }
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+
+      if (data.level === 'done') {
+        evtSource.close();
+        if (btnEl) btnEl.disabled = false;
+      }
+    } catch (e) {
+      const line = document.createElement('div');
+      line.textContent = event.data;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  };
+
+  evtSource.onerror = () => {
+    evtSource.close();
+    if (btnEl) btnEl.disabled = false;
+    const line = document.createElement('div');
+    line.textContent = 'Stream closed.';
+    line.className = 'log-done';
+    logEl.appendChild(line);
+  };
+}
+
+function testMQTT() {
+  streamSSE('/api/settings/test-mqtt', 'mqtt-test-log', 'btn-test-mqtt');
+}
+
+function testBioScan() {
+  streamSSE('/api/settings/test-bio-scan', 'bioscan-test-log', 'btn-test-bioscan');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAP MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function loadMapList() {
+  const container = document.getElementById('map-list-container');
+  if (!container) return;
+
+  try {
+    const res = await dataService.getMapList();
+    const maps = res.maps || [];
+    const activeMap = res.active_map || '';
+
+    if (maps.length === 0) {
+      container.innerHTML = '<p style="color:var(--text-muted);font-size:12px;">No saved maps</p>';
+      return;
+    }
+
+    container.innerHTML = maps.map(m => {
+      const isActive = m.id === activeMap;
+      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+      const robotId = m.robot_map_id ? ` [${m.robot_map_id.slice(0, 8)}]` : '';
+      return `<div class="map-list-item ${isActive ? 'active-map' : ''}">
+        <div class="map-info">
+          <div class="map-name">${m.name || m.id}${robotId} ${isActive ? '(Active)' : ''}</div>
+          <div class="map-meta">${m.width}x${m.height} | res=${m.resolution} | ${ts}</div>
+        </div>
+        <div style="display:flex;gap:4px;">
+          <button class="btn-secondary" onclick="setActiveMap('${m.id}')" ${isActive ? 'disabled' : ''}>
+            ${isActive ? 'Active' : 'Use This'}
+          </button>
+          ${m.robot_map_id ? `<button class="btn-secondary" onclick="switchMap('${m.id}')" title="Switch robot to this map">Switch</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = '<p style="color:var(--text-muted);font-size:12px;">Failed to load maps</p>';
+  }
+}
+
+async function fetchMapFromRobot() {
+  const btn = document.getElementById('btn-fetch-map');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Fetching...';
+  }
+
+  try {
+    const res = await dataService.fetchMapFromRobot();
+    const count = res.maps?.length || 0;
+    await loadMapList();
+    if (count > 0) {
+      alert(`Fetched ${count} map(s) from robot`);
+    } else {
+      alert('No maps found on robot');
+    }
+  } catch (e) {
+    alert('Failed to fetch maps: ' + (e.response?.data?.detail || e.message || e));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Fetch from Robot';
+    }
+  }
+}
+
+async function setActiveMap(mapId) {
+  try {
+    await dataService.setActiveMap(mapId);
+    await loadMapList();
+  } catch (e) {
+    alert('Failed to set active map: ' + (e.message || e));
+  }
+}
+
+async function switchMap(mapId) {
+  if (!confirm('Switch the robot to this map? The robot will change its active map.')) return;
+
+  try {
+    await dataService.switchMap(mapId);
+    await loadMapList();
+    alert('Map switched successfully');
+  } catch (e) {
+    alert('Failed to switch map: ' + (e.response?.data?.detail || e.message || e));
   }
 }
