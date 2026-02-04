@@ -22,6 +22,7 @@ dependencies = [
     "uvicorn==0.34.0",
     "yarl==1.18.3",
     "apscheduler>=3.10.4",
+    "httpx>=0.27.0",
 ]
 
 [dependency-groups]

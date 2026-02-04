@@ -93,3 +93,7 @@ kachaka_api_pb2*.*
 
 # Kachaka export map
 *.kmap
+
+# Runtime data
+data/*.db
+logs/

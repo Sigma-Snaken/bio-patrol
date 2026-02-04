@@ -4,3 +4,9 @@ __pycache__
 .git
 data/*.db
 *.spec
+*.kmap
+build/
+docs/
+tests/
+protos/
+logs/

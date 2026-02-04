@@ -1,7 +1,7 @@
 import sys
 import os
 os.environ["MOCK_BACKEND_API"] = "True"
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(__file__))), "src", "backend"))
 import pytest
 from fastapi.testclient import TestClient
 from main import app

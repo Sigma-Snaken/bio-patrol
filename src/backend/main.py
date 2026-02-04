@@ -39,13 +39,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kachaka.main")
 
+def get_project_root():
+    """Get project root directory. From src/backend/main.py → up 3 levels to project root."""
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 def get_resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
-    if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
+    return os.path.join(get_project_root(), relative_path)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -108,11 +110,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-public_path = get_resource_path("public")
-if os.path.exists(public_path):
-    app.mount("/ui", StaticFiles(directory=public_path, html=True), name="ui")
+frontend_path = get_resource_path("src/frontend")
+if os.path.exists(frontend_path):
+    app.mount("/ui", StaticFiles(directory=frontend_path, html=True), name="ui")
 else:
-    logger.warning(f"Public directory not found at {public_path}, UI will not be available")
+    logger.warning(f"Frontend directory not found at {frontend_path}, UI will not be available")
 
 @app.get("/", tags=["Entry"])
 async def root():

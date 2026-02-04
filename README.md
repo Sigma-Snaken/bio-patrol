@@ -26,7 +26,7 @@ Vanilla JS SPA (frontend)
 | Database | SQLite (scan history) |
 | Frontend | Vanilla JS SPA |
 | Notifications | Telegram Bot API |
-| Deployment | Docker / PyInstaller |
+| Deployment | Docker (amd64 + arm64) / PyInstaller |
 
 ## Quick Start
 
@@ -42,45 +42,71 @@ The app will be available at `http://localhost:8000`.
 
 ```bash
 uv sync
-uv run uvicorn main:app --reload
+PYTHONPATH=src/backend uv run uvicorn main:app --app-dir src/backend --reload
 ```
 
 ## Configuration
 
-All runtime settings live in `settings/settings.json`, merged with defaults from `settings/defaults.py`.
+Runtime JSON configs live in `data/config/`, merged with defaults from `src/backend/settings/defaults.py`.
 
 | File | Purpose |
 |------|---------|
-| `settings/settings.json` | Robot IP, MQTT broker, Telegram config, retry params |
-| `settings/beds.json` | Room/bed layout |
-| `settings/patrol.json` | Shelf ID, patrol order |
-| `settings/schedule.json` | Scheduled patrol times (daily/weekday) |
+| `data/config/settings.json` | Robot IP, MQTT broker, Telegram config, retry params |
+| `data/config/beds.json` | Room/bed layout |
+| `data/config/patrol.json` | Shelf ID, patrol order |
+| `data/config/schedule.json` | Scheduled patrol times (daily/weekday) |
 
 ## Project Structure
 
 ```
-├── main.py                    # App entry, lifespan, router mounting
-├── common_types.py            # Shared models & enums
-├── dependencies.py            # DI: get_fleet, get_bio_sensor_client
+bio-patrol/
+├── src/
+│   ├── backend/                 # Python FastAPI backend
+│   │   ├── main.py              # App entry, lifespan, router mounting
+│   │   ├── common_types.py      # Shared models & enums
+│   │   ├── dependencies.py      # DI: get_fleet, get_bio_sensor_client
+│   │   ├── routers/
+│   │   │   ├── kachaka.py       # Robot control endpoints
+│   │   │   ├── tasks.py         # Task CRUD
+│   │   │   ├── settings.py      # Config + patrol + schedule APIs
+│   │   │   └── bio_sensor.py    # Bio-sensor data endpoints
+│   │   ├── services/
+│   │   │   ├── fleet_api.py     # Robot fleet abstraction
+│   │   │   ├── robot_manager.py # Robot lifecycle
+│   │   │   ├── task_runtime.py  # Task execution engine
+│   │   │   ├── scheduler.py     # APScheduler integration
+│   │   │   ├── bio_sensor_mqtt.py # MQTT client
+│   │   │   └── telegram_service.py # Telegram notifications
+│   │   ├── settings/
+│   │   │   ├── config.py        # Config loading & paths
+│   │   │   └── defaults.py      # Default settings
+│   │   └── utils/
+│   │       ├── json_io.py       # JSON file helpers
+│   │       └── generate_fake_sensor_data.py
+│   │
+│   └── frontend/                # Static web SPA
+│       ├── index.html
+│       ├── css/style.css
+│       ├── js/
+│       └── assets/
 │
-├── routers/
-│   ├── kachaka.py             # Robot control endpoints
-│   ├── tasks.py               # Task CRUD
-│   ├── settings.py            # Config + patrol + schedule APIs
-│   └── bio_sensor.py          # Bio-sensor data endpoints
+├── data/                        # Runtime data (Docker volume)
+│   ├── config/                  # JSON configs
+│   │   ├── settings.json
+│   │   ├── beds.json
+│   │   ├── patrol.json
+│   │   └── schedule.json
+│   └── sensor_data.db           # SQLite (created at runtime)
 │
-├── services/
-│   ├── fleet_api.py           # Robot fleet abstraction
-│   ├── robot_manager.py       # Robot lifecycle
-│   ├── task_runtime.py        # Task execution engine
-│   ├── scheduler.py           # APScheduler integration
-│   ├── bio_sensor_mqtt.py     # MQTT client
-│   └── telegram_service.py    # Telegram notifications
-│
-├── settings/                  # JSON config files + defaults
-├── public/                    # SPA frontend
-├── build/                     # PyInstaller specs
-└── protos/                    # gRPC proto reference
+├── tests/
+├── build/                       # PyInstaller specs
+├── docs/
+├── protos/                      # gRPC proto reference
+├── .github/workflows/docker.yml # CI: multi-arch Docker builds
+├── Dockerfile                   # Multi-stage, ARM-ready
+├── docker-compose.yml
+├── pyproject.toml
+└── uv.lock
 ```
 
 ## API Overview

@@ -7,19 +7,18 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./settings:/app/settings:rw
       - ./data:/app/data:rw
     networks:
-      - kachaka-net
+      - bio-patrol-net
 
   mqtt-broker:
     image: eclipse-mosquitto:2.0
-    container_name: kachaka-mqtt
+    container_name: bio-patrol-mqtt
     ports:
       - "1883:1883"
     networks:
-      - kachaka-net
+      - bio-patrol-net
 
 networks:
-  kachaka-net:
+  bio-patrol-net:
     driver: bridge

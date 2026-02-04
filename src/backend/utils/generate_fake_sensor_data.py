@@ -10,9 +10,10 @@ from datetime import datetime, timedelta
 import os
 import sys
 
-# Add project root to path to import project modules
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(project_root)
+# From src/backend/utils/ → up 4 levels to project root
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Add src/backend/ to path for imports
+sys.path.append(os.path.join(project_root, "src", "backend"))
 
 def get_db_path():
     """Get the database path consistent with the project structure."""
