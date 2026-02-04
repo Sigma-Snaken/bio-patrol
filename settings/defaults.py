@@ -1,0 +1,39 @@
+"""
+Default settings for the Kachaka Care system.
+"""
+
+DEFAULT_SETTINGS = {
+    "robot_ip": "192.168.204.37:26400",
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_topic": "/data-test/demo/wisleep-eck/org/201906078",
+    "mqtt_shelf_id": "",
+    "mqtt_enabled": False,
+    "bio_scan_wait_time": 10,
+    "bio_scan_retry_count": 19,
+    "bio_scan_initial_wait": 120,
+    "bio_scan_valid_status": 4,
+    "robot_max_retries": 3,
+    "robot_retry_base_delay": 2.0,
+    "robot_retry_max_delay": 10.0,
+    "enable_telegram": False,
+    "telegram_bot_token": "",
+    "telegram_user_id": "",
+    "gemini_api_key": "",
+}
+
+DEFAULT_BEDS = {
+    "room_count": 14,
+    "room_start": 101,
+    "bed_numbers": [1],
+    "beds": {},
+}
+
+DEFAULT_PATROL = {
+    "shelf_id": "S_04",
+    "beds_order": [],
+}
+
+DEFAULT_SCHEDULE = {
+    "schedules": [],
+}

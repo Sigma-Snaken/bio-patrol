@@ -1,0 +1,363 @@
+{
+  "room_count": 14,
+  "room_start": 101,
+  "bed_numbers": [
+    1,
+    2,
+    3,
+    5,
+    6
+  ],
+  "beds": {
+    "101-1": {
+      "room": 101,
+      "bed": 1,
+      "location_id": "B_101-1"
+    },
+    "101-2": {
+      "room": 101,
+      "bed": 2,
+      "location_id": "B_101-2"
+    },
+    "101-3": {
+      "room": 101,
+      "bed": 3,
+      "location_id": "B_101-3"
+    },
+    "101-5": {
+      "room": 101,
+      "bed": 5,
+      "location_id": "B_101-5"
+    },
+    "101-6": {
+      "room": 101,
+      "bed": 6,
+      "location_id": "B_101-6"
+    },
+    "102-1": {
+      "room": 102,
+      "bed": 1,
+      "location_id": "B_102-1"
+    },
+    "102-2": {
+      "room": 102,
+      "bed": 2,
+      "location_id": "B_102-2"
+    },
+    "102-3": {
+      "room": 102,
+      "bed": 3,
+      "location_id": "B_102-3"
+    },
+    "102-5": {
+      "room": 102,
+      "bed": 5,
+      "location_id": "B_102-5"
+    },
+    "102-6": {
+      "room": 102,
+      "bed": 6,
+      "location_id": "B_102-6"
+    },
+    "103-1": {
+      "room": 103,
+      "bed": 1,
+      "location_id": "B_103-1"
+    },
+    "103-2": {
+      "room": 103,
+      "bed": 2,
+      "location_id": "B_103-2"
+    },
+    "103-3": {
+      "room": 103,
+      "bed": 3,
+      "location_id": "B_103-3"
+    },
+    "103-5": {
+      "room": 103,
+      "bed": 5,
+      "location_id": "B_103-5"
+    },
+    "103-6": {
+      "room": 103,
+      "bed": 6,
+      "location_id": "B_103-6"
+    },
+    "104-1": {
+      "room": 104,
+      "bed": 1,
+      "location_id": "B_104-1"
+    },
+    "104-2": {
+      "room": 104,
+      "bed": 2,
+      "location_id": "B_104-2"
+    },
+    "104-3": {
+      "room": 104,
+      "bed": 3,
+      "location_id": "B_104-3"
+    },
+    "104-5": {
+      "room": 104,
+      "bed": 5,
+      "location_id": "B_104-5"
+    },
+    "104-6": {
+      "room": 104,
+      "bed": 6,
+      "location_id": "B_104-6"
+    },
+    "105-1": {
+      "room": 105,
+      "bed": 1,
+      "location_id": "B_105-1"
+    },
+    "105-2": {
+      "room": 105,
+      "bed": 2,
+      "location_id": "B_105-2"
+    },
+    "105-3": {
+      "room": 105,
+      "bed": 3,
+      "location_id": "B_105-3"
+    },
+    "105-5": {
+      "room": 105,
+      "bed": 5,
+      "location_id": "B_105-5"
+    },
+    "105-6": {
+      "room": 105,
+      "bed": 6,
+      "location_id": "B_105-6"
+    },
+    "106-1": {
+      "room": 106,
+      "bed": 1,
+      "location_id": "B_106-1"
+    },
+    "106-2": {
+      "room": 106,
+      "bed": 2,
+      "location_id": "B_106-2"
+    },
+    "106-3": {
+      "room": 106,
+      "bed": 3,
+      "location_id": "B_106-3"
+    },
+    "106-5": {
+      "room": 106,
+      "bed": 5,
+      "location_id": "B_106-5"
+    },
+    "106-6": {
+      "room": 106,
+      "bed": 6,
+      "location_id": "B_106-6"
+    },
+    "107-1": {
+      "room": 107,
+      "bed": 1,
+      "location_id": "B_107-1"
+    },
+    "107-2": {
+      "room": 107,
+      "bed": 2,
+      "location_id": "B_107-2"
+    },
+    "107-3": {
+      "room": 107,
+      "bed": 3,
+      "location_id": "B_107-3"
+    },
+    "107-5": {
+      "room": 107,
+      "bed": 5,
+      "location_id": "B_107-5"
+    },
+    "107-6": {
+      "room": 107,
+      "bed": 6,
+      "location_id": "B_107-6"
+    },
+    "108-1": {
+      "room": 108,
+      "bed": 1,
+      "location_id": "B_108-1"
+    },
+    "108-2": {
+      "room": 108,
+      "bed": 2,
+      "location_id": "B_108-2"
+    },
+    "108-3": {
+      "room": 108,
+      "bed": 3,
+      "location_id": "B_108-3"
+    },
+    "108-5": {
+      "room": 108,
+      "bed": 5,
+      "location_id": "B_108-5"
+    },
+    "108-6": {
+      "room": 108,
+      "bed": 6,
+      "location_id": "B_108-6"
+    },
+    "109-1": {
+      "room": 109,
+      "bed": 1,
+      "location_id": "B_109-1"
+    },
+    "109-2": {
+      "room": 109,
+      "bed": 2,
+      "location_id": "B_109-2"
+    },
+    "109-3": {
+      "room": 109,
+      "bed": 3,
+      "location_id": "B_109-3"
+    },
+    "109-5": {
+      "room": 109,
+      "bed": 5,
+      "location_id": "B_109-5"
+    },
+    "109-6": {
+      "room": 109,
+      "bed": 6,
+      "location_id": "B_109-6"
+    },
+    "110-1": {
+      "room": 110,
+      "bed": 1,
+      "location_id": "B_110-1"
+    },
+    "110-2": {
+      "room": 110,
+      "bed": 2,
+      "location_id": "B_110-2"
+    },
+    "110-3": {
+      "room": 110,
+      "bed": 3,
+      "location_id": "B_110-3"
+    },
+    "110-5": {
+      "room": 110,
+      "bed": 5,
+      "location_id": "B_110-5"
+    },
+    "110-6": {
+      "room": 110,
+      "bed": 6,
+      "location_id": "B_110-6"
+    },
+    "111-1": {
+      "room": 111,
+      "bed": 1,
+      "location_id": "B_111-1"
+    },
+    "111-2": {
+      "room": 111,
+      "bed": 2,
+      "location_id": "B_111-2"
+    },
+    "111-3": {
+      "room": 111,
+      "bed": 3,
+      "location_id": "B_111-3"
+    },
+    "111-5": {
+      "room": 111,
+      "bed": 5,
+      "location_id": "B_111-5"
+    },
+    "111-6": {
+      "room": 111,
+      "bed": 6,
+      "location_id": "B_111-6"
+    },
+    "112-1": {
+      "room": 112,
+      "bed": 1,
+      "location_id": "B_112-1"
+    },
+    "112-2": {
+      "room": 112,
+      "bed": 2,
+      "location_id": "B_112-2"
+    },
+    "112-3": {
+      "room": 112,
+      "bed": 3,
+      "location_id": "B_112-3"
+    },
+    "112-5": {
+      "room": 112,
+      "bed": 5,
+      "location_id": "B_112-5"
+    },
+    "112-6": {
+      "room": 112,
+      "bed": 6,
+      "location_id": "B_112-6"
+    },
+    "113-1": {
+      "room": 113,
+      "bed": 1,
+      "location_id": "B_113-1"
+    },
+    "113-2": {
+      "room": 113,
+      "bed": 2,
+      "location_id": "B_113-2"
+    },
+    "113-3": {
+      "room": 113,
+      "bed": 3,
+      "location_id": "B_113-3"
+    },
+    "113-5": {
+      "room": 113,
+      "bed": 5,
+      "location_id": "B_113-5"
+    },
+    "113-6": {
+      "room": 113,
+      "bed": 6,
+      "location_id": "B_113-6"
+    },
+    "114-1": {
+      "room": 114,
+      "bed": 1,
+      "location_id": "B_114-1"
+    },
+    "114-2": {
+      "room": 114,
+      "bed": 2,
+      "location_id": "B_114-2"
+    },
+    "114-3": {
+      "room": 114,
+      "bed": 3,
+      "location_id": "B_114-3"
+    },
+    "114-5": {
+      "room": 114,
+      "bed": 5,
+      "location_id": "B_114-5"
+    },
+    "114-6": {
+      "room": 114,
+      "bed": 6,
+      "location_id": "B_114-6"
+    }
+  }
+}

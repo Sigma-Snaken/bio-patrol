@@ -1,0 +1,25 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bio-patrol
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./settings:/app/settings:rw
+      - ./data:/app/data:rw
+    networks:
+      - kachaka-net
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: kachaka-mqtt
+    ports:
+      - "1883:1883"
+    networks:
+      - kachaka-net
+
+networks:
+  kachaka-net:
+    driver: bridge
