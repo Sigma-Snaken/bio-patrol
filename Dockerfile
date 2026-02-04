@@ -41,7 +41,9 @@ COPY --from=builder /app/pyproject.toml /app/uv.lock ./
 
 # Copy application code
 COPY src/ src/
-COPY data/ data/
+
+# Create runtime data directories (config files generated from defaults.py)
+RUN mkdir -p data/config data/maps
 
 EXPOSE 8000
 
