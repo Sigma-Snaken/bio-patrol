@@ -1135,11 +1135,28 @@ input[type="checkbox"]:checked::after {
 
 .action-bar {
     display: flex;
+    align-items: center;
     gap: 8px;
     padding: 12px 16px;
     background: var(--panel-dark);
     border-bottom: 1px solid var(--border-medium);
     flex-wrap: wrap;
+}
+
+.save-toast {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--mint);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.save-toast.show {
+    opacity: 1;
+}
+
+.save-toast.error {
+    color: var(--coral);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

@@ -794,11 +794,20 @@ function setRoomBeds(bedKeys, enabled) {
 async function savePatrolConfig() {
   if (!patrolConfig) return;
 
+  const toast = document.getElementById('patrol-save-toast');
   try {
     await dataService.savePatrol(patrolConfig);
-    alert('Patrol configuration saved!');
+    if (toast) {
+      toast.textContent = 'Saved!';
+      toast.className = 'save-toast show';
+      setTimeout(() => { toast.className = 'save-toast'; }, 2000);
+    }
   } catch (e) {
-    alert('Failed to save patrol config: ' + e.message);
+    if (toast) {
+      toast.textContent = 'Failed: ' + e.message;
+      toast.className = 'save-toast show error';
+      setTimeout(() => { toast.className = 'save-toast'; }, 3000);
+    }
   }
 }
 

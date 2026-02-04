@@ -139,6 +139,7 @@
         <button class="btn-premium" onclick="startPatrol()">▶ Start Patrol</button>
         <button class="btn-success" onclick="startDemoRun()">▶ Demo Run</button>
         <button class="btn-secondary" onclick="savePatrolConfig()">Save</button>
+        <span class="save-toast" id="patrol-save-toast"></span>
         <button class="btn-secondary" onclick="savePatrolPreset()">Save As...</button>
         <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
           <select id="patrol-preset-select" onchange="onPresetSelect(this.value)" style="padding:5px 8px;background:var(--panel-light);border:1px solid var(--border-subtle);color:var(--text-primary);font-family:var(--font-mono);font-size:12px;min-width:140px;">
