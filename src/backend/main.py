@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
 import routers.kachaka as kachaka
 import routers.tasks as tasks
 import routers.settings as settings_router
@@ -144,18 +143,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-frontend_path = get_resource_path("src/frontend")
-if os.path.exists(frontend_path):
-    app.mount("/ui", StaticFiles(directory=frontend_path, html=True), name="ui")
-else:
-    logger.warning(f"Frontend directory not found at {frontend_path}, UI will not be available")
-
-@app.get("/", tags=["Entry"])
-async def root():
-    return RedirectResponse(url="/ui/")
-
-# Include routers
+# Include routers (before static files mount so API routes take priority)
 app.include_router(tasks.router)
 app.include_router(kachaka.router)
 app.include_router(settings_router.router)
 app.include_router(bio_sensor.router)
+
+frontend_path = get_resource_path("src/frontend")
+if os.path.exists(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="ui")
+else:
+    logger.warning(f"Frontend directory not found at {frontend_path}, UI will not be available")
