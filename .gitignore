@@ -97,5 +97,6 @@ kachaka_api_pb2*.*
 # Runtime data
 data/*.db
 data/maps/
+data/config/*.json
 data/config/patrol_presets/
 logs/
