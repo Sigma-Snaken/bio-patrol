@@ -63,6 +63,7 @@ class TaskEngine:
         logger.info(f"===> Starting task: {task.task_id} on robot {task.robot_id}")
         task.status = TaskStatus.IN_PROGRESS
         current_tasks[task.robot_id] = task.task_id # Mark robot as busy
+        self.current_task_id = task.task_id
         self.task_start_time = datetime.now().strftime("%Y%m%d%H%M%S")
 
         try:
@@ -100,9 +101,8 @@ class TaskEngine:
                                 "bed_id": self.target_bed
                             }
 
-                            taskid = f"{self.task_start_time}-{self.target_bed}-0"
                             client._save_scan_data(
-                                task_id=taskid,
+                                task_id=self.current_task_id,
                                 data=error_data,
                                 retry_count=0,
                                 is_valid=False
@@ -365,7 +365,7 @@ class TaskEngine:
                 )
             elif action == "bio_scan":
                 client = get_bio_sensor_client()
-                scan_result = await client.get_valid_scan_data(target_bed=self.target_bed, task_id=self.task_start_time)
+                scan_result = await client.get_valid_scan_data(target_bed=self.target_bed, task_id=self.current_task_id)
                 print('bio_scan result: ', scan_result)
 
                 # Check if bio scan was successful (valid data was obtained)

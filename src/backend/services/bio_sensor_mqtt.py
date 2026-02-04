@@ -119,7 +119,7 @@ class BioSensorMQTTClient:
                     is_valid = data['status'] == VALID_STATUS and data['bpm'] > 0 and data['rpm'] > 0
                     data['details'] = '量測正常' if is_valid else '無有效量測數值'
                     data['bed_id'] = target_bed
-                    self._save_scan_data(f"{task_id}-{target_bed}-{retry_count}", data, retry_count, is_valid)
+                    self._save_scan_data(task_id, data, retry_count, is_valid)
 
                     if is_valid and valid_data is None:
                         valid_data = data
