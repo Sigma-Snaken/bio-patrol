@@ -1,0 +1,10 @@
+{
+  "robot_ip": "192.168.204.37:26400",
+  "mqtt_broker": "mqtt-broker",
+  "mqtt_port": 1883,
+  "mqtt_topic": "/data-test/demo/wisleep-eck/org/201906078",
+  "mqtt_enabled": false,
+  "enable_telegram": false,
+  "telegram_bot_token": "",
+  "telegram_user_id": ""
+}

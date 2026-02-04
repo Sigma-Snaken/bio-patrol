@@ -1,0 +1,40 @@
+services:
+  app:
+    image: ghcr.io/sigma-snaken/bio-patrol:main
+    container_name: bio-patrol
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data:rw
+    networks:
+      - bio-patrol-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: bio-patrol-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - mosquitto-data:/mosquitto/data
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - bio-patrol-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  mosquitto-data:
+
+networks:
+  bio-patrol-net:
+    driver: bridge
