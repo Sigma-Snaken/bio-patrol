@@ -1247,18 +1247,14 @@ async function loadMapList() {
     container.innerHTML = maps.map(m => {
       const isActive = m.id === activeMap;
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
-      const robotId = m.robot_map_id ? ` [${m.robot_map_id.slice(0, 8)}]` : '';
       return `<div class="map-list-item ${isActive ? 'active-map' : ''}">
         <div class="map-info">
-          <div class="map-name">${m.name || m.id}${robotId} ${isActive ? '(Active)' : ''}</div>
+          <div class="map-name">${m.name || m.id} ${isActive ? '(Active)' : ''}</div>
           <div class="map-meta">${m.width}x${m.height} | res=${m.resolution} | ${ts}</div>
         </div>
-        <div style="display:flex;gap:4px;">
-          <button class="btn-secondary" onclick="setActiveMap('${m.id}')" ${isActive ? 'disabled' : ''}>
-            ${isActive ? 'Active' : 'Use This'}
-          </button>
-          ${m.robot_map_id ? `<button class="btn-secondary" onclick="switchMap('${m.id}')" title="Switch robot to this map">Switch</button>` : ''}
-        </div>
+        <button class="btn-secondary" onclick="useMap('${m.id}')" ${isActive ? 'disabled' : ''}>
+          ${isActive ? 'Active' : 'Use'}
+        </button>
       </div>`;
     }).join('');
   } catch (e) {
@@ -1292,22 +1288,10 @@ async function fetchMapFromRobot() {
   }
 }
 
-async function setActiveMap(mapId) {
-  try {
-    await dataService.setActiveMap(mapId);
-    await loadMapList();
-  } catch (e) {
-    alert('Failed to set active map: ' + (e.message || e));
-  }
-}
-
-async function switchMap(mapId) {
-  if (!confirm('Switch the robot to this map? The robot will change its active map.')) return;
-
+async function useMap(mapId) {
   try {
     await dataService.switchMap(mapId);
     await loadMapList();
-    alert('Map switched successfully');
   } catch (e) {
     alert('Failed to switch map: ' + (e.response?.data?.detail || e.message || e));
   }
