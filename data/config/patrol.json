@@ -10,7 +10,11 @@
     },
     {
       "bed_key": "102-1",
-      "enabled": true
+      "enabled": false
+    },
+    {
+      "bed_key": "102-2",
+      "enabled": false
     }
   ]
 }
