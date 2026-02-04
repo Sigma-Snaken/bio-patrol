@@ -2,23 +2,6 @@ import os
 import sys
 
 
-def get_env_file_path():
-    """Get the path to .env.local file, using AppData to avoid startup folder issues."""
-    if getattr(sys, 'frozen', False):
-        appdata = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
-        config_dir = os.path.join(appdata, 'BioPatrol')
-        os.makedirs(config_dir, exist_ok=True)
-        config_path = os.path.join(config_dir, '.env.local')
-
-        if not os.path.exists(config_path):
-            with open(config_path, 'w') as f:
-                f.write('# Bio Patrol Configuration\nPORT=8000\nMQTT_ENABLED=false\n')
-
-        return config_path
-    else:
-        return '.env.local'
-
-
 def get_settings_dir():
     """Get the path to the data/config directory (JSON configs).
     From src/backend/settings/config.py → up 4 levels to project root."""
