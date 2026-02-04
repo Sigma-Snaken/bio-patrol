@@ -153,13 +153,14 @@ body::after {
 }
 
 .logo {
-    font-family: var(--font-display);
-    font-size: 18px;
-    font-weight: 700;
-    letter-spacing: 3px;
-    color: var(--amber);
-    text-transform: uppercase;
+    display: flex;
+    align-items: center;
     white-space: nowrap;
+}
+
+.logo-img {
+    height: 28px;
+    width: auto;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
