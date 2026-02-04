@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 import traceback
@@ -18,14 +19,58 @@ from services.task_runtime import (
 from services.scheduler import scheduler_service
 from dependencies import get_fleet, get_bio_sensor_client
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ]
-)
-logger = logging.getLogger("bio_patrol.main")
+# ---------------------------------------------------------------------------
+# Logging setup: stdout + per-module log files under <project_root>/data/logs/
+# ---------------------------------------------------------------------------
+_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+def _setup_logging():
+    log_dir = os.path.join(get_project_root(), "data", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    formatter = logging.Formatter(_LOG_FORMAT)
+
+    # stdout – keeps docker compose logs readable
+    stdout_h = logging.StreamHandler(sys.stdout)
+    stdout_h.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(stdout_h)
+
+    def _file_handler(filename):
+        h = RotatingFileHandler(
+            os.path.join(log_dir, filename),
+            maxBytes=5 * 1024 * 1024,   # 5 MB
+            backupCount=3,
+        )
+        h.setFormatter(formatter)
+        return h
+
+    # Route loggers → separate files
+    # app.log   : main lifecycle, fleet/robot, telegram, settings, utils
+    # task.log  : patrol task execution
+    # sensor.log: bio-sensor MQTT data
+    # scheduler.log: cron-style scheduler
+    routing = {
+        "app.log": [
+            "bio_patrol", "services.fleet_api", "services.robot_manager",
+            "services.telegram_service", "routers.settings", "utils",
+        ],
+        "task.log": [
+            "kachaka", "routers.tasks", "routers.kachaka",
+        ],
+        "sensor.log": [
+            "BioSensorMQTTClient", "routers.bio_sensor",
+        ],
+        "scheduler.log": [
+            "services.scheduler",
+        ],
+    }
+    for filename, names in routing.items():
+        fh = _file_handler(filename)
+        for name in names:
+            logging.getLogger(name).addHandler(fh)
 
 def get_project_root():
     """Get project root directory. From src/backend/main.py → up 3 levels to project root."""
@@ -34,6 +79,9 @@ def get_project_root():
 def get_resource_path(relative_path):
     """Get absolute path to resource relative to project root."""
     return os.path.join(get_project_root(), relative_path)
+
+_setup_logging()
+logger = logging.getLogger("bio_patrol.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
