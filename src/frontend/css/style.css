@@ -163,6 +163,15 @@ body::after {
     width: auto;
 }
 
+.logo-text {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--amber);
+    margin-left: 10px;
+    letter-spacing: 2px;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    TAB NAVIGATION
    ═══════════════════════════════════════════════════════════════════════════ */
