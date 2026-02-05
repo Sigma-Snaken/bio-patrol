@@ -84,7 +84,7 @@ PYTHONPATH=src/backend uv run uvicorn main:app --app-dir src/backend --reload
 - **Latest Bio-Sensor**：最新心率 / 呼吸率 / 狀態
 - **Patrol Schedule**：排程清單 + 下次巡房時間（自動計算 daily/weekday）+ 新增排程
 - **Quick Actions**：Demo Run / Start Patrol 按鈕
-- **Patrol Progress**：巡房啟動後顯示進度條（已完成/總床位數 + 目前掃描床位）
+- **Patrol Progress**：巡房啟動後顯示進度條（已完成/總床位數 + 目前掃描床位）+ 取消按鈕
 
 ## 核心功能
 
@@ -109,6 +109,17 @@ PYTHONPATH=src/backend uv run uvicorn main:app --app-dir src/backend --reload
 - **前端顯示**：彈出警示視窗，內嵌地圖標示掉落位置（紅色標記）
 - **恢復選項**：僅歸位感測器 / 歸位並繼續巡房（剩餘床位）
 - **Monitor 停止時機**：執行 `return_shelf` 步驟前即停止，之後的步驟不再監控
+
+### 取消巡房
+
+巡房進行中可透過 Dashboard 進度條旁的 ✕ 按鈕取消：
+
+- 前端 POST `/api/tasks/{id}/cancel` 設定狀態為 CANCELLED
+- 後端即時送出 `cancel_command` 停止機器人當前動作
+- Task Engine 偵測 CANCELLED 狀態後中斷迴圈，不會覆寫為 FAILED
+- 若機器人正在搬運貨架 → 自動歸位貨架 + 返回充電座
+- Telegram 通知「巡房已取消」
+- 前端顯示「Patrol cancelled」後自動隱藏進度條
 
 ### 移動錯誤處理
 
@@ -210,7 +221,8 @@ bio-patrol/
 | `POST` | `/api/patrol/recover-shelf` | 歸位貨架 |
 | `GET` | `/api/tasks` | 任務列表 |
 | `GET` | `/api/tasks/{id}` | 任務詳情 |
-| `DELETE` | `/api/tasks/{id}` | 取消任務 |
+| `POST` | `/api/tasks/{id}/cancel` | 取消任務（停止機器人 + 歸位貨架） |
+| `DELETE` | `/api/tasks/{id}` | 刪除任務 |
 
 ### Presets
 
@@ -267,7 +279,6 @@ CI/CD 透過 GitHub Actions (`.github/workflows/docker.yml`) 自動建置 multi-
 
 | 文件 | 內容 |
 |------|------|
-| [`docs/task_runtime_flow.md`](docs/task_runtime_flow.md) | Task Engine 完整流程圖 & 錯誤處理 |
 | [`docs/BIO_SENSOR.md`](docs/BIO_SENSOR.md) | MQTT 感測器整合說明 |
 | [`docs/GRPC_ERROR_FIX_SUMMARY.md`](docs/GRPC_ERROR_FIX_SUMMARY.md) | gRPC 錯誤處理 & 重試邏輯 |
 

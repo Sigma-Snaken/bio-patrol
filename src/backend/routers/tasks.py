@@ -68,10 +68,19 @@ async def cancel_task(task_id: str):
     task.status = TaskStatus.CANCELLED
     tasks_db[task_id] = task # Update in DB
     logger.info(f"Task {task_id} status set to CANCELLED.")
-    
-    # If task was in the robot's queue but not yet started by worker,
-    # the worker will see CANCELLED status when it picks it up.
-    # If it was IN_PROGRESS, TaskEngine's step loop will see CANCELLED.
+
+    # If task is actively running, send cancel_command to stop the robot
+    if task.robot_id and task.robot_id in current_tasks and current_tasks[task.robot_id] == task_id:
+        try:
+            from dependencies import get_fleet
+            fleet = get_fleet()
+            client = fleet.manager.get_robot_client(task.robot_id)
+            if client:
+                await client.cancel_command()
+                logger.info(f"Sent cancel_command to robot {task.robot_id} for task {task_id}")
+        except Exception as e:
+            logger.warning(f"Failed to send cancel_command for task {task_id}: {e}")
+
     return task
 
 @router.delete("/tasks/{task_id}")

@@ -121,7 +121,7 @@ class DataService {
   }
 
   async cancelTask(taskId) {
-    const res = await axios.delete(`/api/tasks/${taskId}`);
+    const res = await axios.post(`/api/tasks/${taskId}/cancel`);
     return res.data;
   }
 

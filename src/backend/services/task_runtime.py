@@ -381,7 +381,8 @@ class TaskEngine:
                         elif step.action in ("bio_scan", "wait", "speak", "return_shelf"):
                             logger.warning(f"[NON-CRITICAL] Step {step.step_id} ({step.action}) failed, continuing to next step")
                         else:
-                            task.status = TaskStatus.FAILED
+                            if task.status != TaskStatus.CANCELLED:
+                                task.status = TaskStatus.FAILED
                             break
 
                 except Exception as e:
@@ -407,7 +408,8 @@ class TaskEngine:
                     elif step.action in ("bio_scan", "wait", "speak", "return_shelf"):
                         logger.warning(f"[NON-CRITICAL] Step {step.step_id} ({step.action}) exception, continuing to next step")
                     else:
-                        task.status = TaskStatus.FAILED
+                        if task.status != TaskStatus.CANCELLED:
+                            task.status = TaskStatus.FAILED
                         break
 
                 step_index += 1
@@ -417,13 +419,31 @@ class TaskEngine:
                 logger.info(f"===> Task {task.task_id} completed successfully on robot {self.robot_id}")
 
         finally:
+            tag = f"Task {task.task_id}"
             await self._stop_shelf_monitor()
+
+            # Cancelled cleanup: return shelf and go home
+            if task.status == TaskStatus.CANCELLED and getattr(self, "_current_shelf_id", None):
+                try:
+                    cmd = ReturnShelfCmd()
+                    cmd.shelf_id = self._current_shelf_id
+                    await self.fleet.return_shelf(self.robot_id, cmd)
+                    logger.info(f"[{tag}] Cancelled: returned shelf {self._current_shelf_id}")
+                    home_cmd = DefaultCmd()
+                    await self.fleet.return_home(self.robot_id, home_cmd)
+                    logger.info(f"[{tag}] Cancelled: robot sent home")
+                except Exception as e:
+                    logger.error(f"[{tag}] Cancelled cleanup error: {e}")
+
             try:
                 from services.telegram_service import send_telegram_message
                 bio_steps = [s for s in task.steps if s.action == "bio_scan"]
                 total_beds = len(bio_steps)
                 success_beds = sum(1 for s in bio_steps if s.status == StepStatus.SUCCESS)
-                await send_telegram_message(f"✅ 巡房完成\n本次巡房 {total_beds} 床，成功讀取 {success_beds} 床")
+                if task.status == TaskStatus.CANCELLED:
+                    await send_telegram_message(f"🚫 巡房已取消\n本次巡房 {total_beds} 床，已完成 {success_beds} 床")
+                else:
+                    await send_telegram_message(f"✅ 巡房完成\n本次巡房 {total_beds} 床，成功讀取 {success_beds} 床")
             except Exception as tg_err:
                 logger.error(f"Failed to send task-completion Telegram: {tg_err}")
             current_tasks.pop(self.robot_id, None)

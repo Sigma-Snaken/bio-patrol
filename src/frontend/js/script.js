@@ -9,6 +9,8 @@ let currentTab = 'dashboard';
 let pollingInterval = null;
 let robotData = { battery: null, pose: null, status: 'unknown' };
 let shelfDropPose = null;  // {x, y, theta} or null — set by checkShelfDrop()
+let _cancelledDismissed = new Set();  // task IDs dismissed after showing "cancelled"
+let _cancelHideTimer = null;
 
 // Map description (VAC map)
 const gMapDesc = {
@@ -199,21 +201,27 @@ async function fetchTaskStatus() {
 
 function updatePatrolProgress() {
   const container = document.getElementById('patrol-progress');
+  const cancelBtn = document.getElementById('btn-cancel-patrol');
   if (!container) return;
 
   // Find active or most recent patrol task
   const activeTask = tasks.find(t => t.status === 'in_progress' || t.status === 'queued');
-  const recentDone = !activeTask ? tasks.find(t => t.status === 'done' || t.status === 'failed') : null;
+  const recentDone = !activeTask ? tasks.find(t =>
+    t.status === 'done' || t.status === 'failed' ||
+    (t.status === 'cancelled' && !_cancelledDismissed.has(t.task_id))
+  ) : null;
   const task = activeTask || recentDone;
 
   if (!task || !task.steps) {
     container.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
     return;
   }
 
   const bioSteps = task.steps.filter(s => s.action === 'bio_scan' || s.action === 'wait');
   if (bioSteps.length === 0) {
     container.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
     return;
   }
 
@@ -229,10 +237,25 @@ function updatePatrolProgress() {
 
   const statusEl = document.getElementById('patrol-progress-status');
   const executing = bioSteps.find(s => s.status === 'executing');
+
+  // Show/hide cancel button
+  const isActive = task.status === 'in_progress' || task.status === 'queued';
+  if (cancelBtn) cancelBtn.style.display = isActive ? '' : 'none';
+
   if (task.status === 'in_progress' && executing) {
     statusEl.textContent = executing.params?.bed_key ? `Scanning ${executing.params.bed_key}...` : 'Scanning...';
-  } else if (task.status === 'in_progress' || task.status === 'queued') {
+  } else if (isActive) {
     statusEl.textContent = 'In progress...';
+  } else if (task.status === 'cancelled') {
+    statusEl.textContent = 'Patrol cancelled';
+    // Auto-hide progress bar after a short delay (guard against repeated timers)
+    if (!_cancelHideTimer) {
+      _cancelHideTimer = setTimeout(() => {
+        _cancelledDismissed.add(task.task_id);
+        container.style.display = 'none';
+        _cancelHideTimer = null;
+      }, 3000);
+    }
   } else if (task.status === 'done') {
     statusEl.textContent = 'Completed';
   } else if (task.status === 'failed') {
@@ -506,6 +529,16 @@ async function startPatrol() {
     alert('Patrol started!');
   } catch (e) {
     alert('Failed to start patrol: ' + (e.message || e));
+  }
+}
+
+async function cancelPatrol() {
+  const active = tasks.find(t => t.status === 'in_progress' || t.status === 'queued');
+  if (!active) return;
+  try {
+    await dataService.cancelTask(active.task_id);
+  } catch (e) {
+    console.error('Cancel patrol failed:', e);
   }
 }
 
