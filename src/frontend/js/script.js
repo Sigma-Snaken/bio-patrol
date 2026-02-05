@@ -8,6 +8,7 @@ let tasks = [];
 let currentTab = 'dashboard';
 let pollingInterval = null;
 let robotData = { battery: null, pose: null, status: 'unknown' };
+let shelfDropPose = null;  // {x, y, theta} or null — set by checkShelfDrop()
 
 // Map description (VAC map)
 const gMapDesc = {
@@ -211,31 +212,73 @@ function checkShelfDrop() {
 
   if (shelfDropTask) {
     const meta = shelfDropTask.metadata || {};
+    shelfDropPose = meta.shelf_pose || null;
+
     const roomEl = document.getElementById('shelf-drop-room');
     if (roomEl) roomEl.textContent = meta.room || meta.bed_key || 'unknown';
+
+    // Show remaining beds
+    const remainingEl = document.getElementById('shelf-drop-remaining');
+    const remaining = meta.remaining_beds || [];
+    if (remainingEl) {
+      if (remaining.length > 0) {
+        remainingEl.innerHTML = '<p style="margin:0 0 6px;font-size:13px;color:var(--text-muted);">尚未巡房的床位：</p>' +
+          remaining.map(b => `<span class="bed-chip">${b.bed_key}</span>`).join('');
+        remainingEl.style.display = 'block';
+      } else {
+        remainingEl.style.display = 'none';
+      }
+    }
+
+    // Show/hide resume button based on remaining beds
+    const resumeBtn = document.getElementById('btn-resume-patrol');
+    if (resumeBtn) resumeBtn.style.display = remaining.length > 0 ? '' : 'none';
+
+    // Store task ID for recovery/resume
+    overlay.dataset.taskId = shelfDropTask.task_id;
     overlay.style.display = 'flex';
   } else {
     overlay.style.display = 'none';
+    shelfDropPose = null;
   }
 }
 
 async function recoverShelf() {
   const statusEl = document.getElementById('shelf-recovery-status');
-  if (statusEl) statusEl.textContent = 'Recovering...';
+  if (statusEl) statusEl.textContent = '歸位中...';
 
   try {
-    // Get shelf_id from settings
     const settings = await dataService.getSettings();
     const shelfId = settings?.shelf_id || 'S_04';
 
     const result = await dataService.recoverShelf(shelfId);
-    if (statusEl) statusEl.textContent = 'Recovery successful!';
+    if (statusEl) statusEl.textContent = '歸位成功！';
     setTimeout(() => {
       document.getElementById('shelf-drop-overlay').style.display = 'none';
       if (statusEl) statusEl.textContent = '';
     }, 2000);
   } catch (e) {
-    if (statusEl) statusEl.textContent = `Recovery failed: ${e.message || e}`;
+    if (statusEl) statusEl.textContent = `歸位失敗: ${e.message || e}`;
+  }
+}
+
+async function resumePatrol() {
+  const overlay = document.getElementById('shelf-drop-overlay');
+  const taskId = overlay?.dataset.taskId;
+  if (!taskId) return;
+
+  const statusEl = document.getElementById('shelf-recovery-status');
+  if (statusEl) statusEl.textContent = '歸位並恢復巡房中...';
+
+  try {
+    const result = await dataService.resumePatrol(taskId);
+    if (statusEl) statusEl.textContent = `已恢復巡房，剩餘 ${result.beds_count} 床`;
+    setTimeout(() => {
+      overlay.style.display = 'none';
+      if (statusEl) statusEl.textContent = '';
+    }, 2000);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `恢復失敗: ${e.response?.data?.detail || e.message || e}`;
   }
 }
 
@@ -582,6 +625,35 @@ function drawMap() {
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1;
       ctx.stroke();
+    }
+  }
+
+  // Draw shelf drop marker
+  if (shelfDropPose) {
+    const dropPos = tfROS2Canvas(gMapDesc, shelfDropPose);
+    if (dropPos.x && dropPos.y) {
+      ctx.save();
+      ctx.translate(dropPos.x, dropPos.y);
+
+      // Pulsing red circle
+      ctx.beginPath();
+      ctx.arc(0, 0, 10, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, 0, 5, 0, 2 * Math.PI);
+      ctx.fillStyle = 'red';
+      ctx.fill();
+
+      // Cross mark
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-3, -3); ctx.lineTo(3, 3);
+      ctx.moveTo(3, -3);  ctx.lineTo(-3, 3);
+      ctx.stroke();
+
+      ctx.restore();
     }
   }
 

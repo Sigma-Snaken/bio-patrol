@@ -130,6 +130,24 @@ class TaskEngine:
         location_id = trigger_step.params.get("location_id", "unknown") if trigger_step else "unknown"
         shelf_id = trigger_step.params.get("shelf_id", "unknown") if trigger_step else "unknown"
 
+        if shelf_id == "unknown":
+            shelf_id = getattr(self, "_current_shelf_id", "unknown")
+
+        # Query current shelf position
+        shelf_pose = None
+        try:
+            shelves = await self.fleet.get_shelves(self.robot_id)
+            from google.protobuf.json_format import MessageToDict
+            for s in shelves:
+                s_dict = MessageToDict(s, preserving_proto_field_name=True)
+                if s_dict.get("id") == shelf_id:
+                    pose = s_dict.get("pose", {})
+                    shelf_pose = {"x": pose.get("x", 0), "y": pose.get("y", 0), "theta": pose.get("theta", 0)}
+                    logger.info(f"[SHELF DROP] Shelf {shelf_id} pose: {shelf_pose}")
+                    break
+        except Exception as e:
+            logger.warning(f"[SHELF DROP] Failed to get shelf pose: {e}")
+
         # Collect remaining unprocessed beds
         remaining_beds = []
         collected_step_ids = set()
@@ -177,6 +195,7 @@ class TaskEngine:
             "room": location_id,
             "dropped_at": get_now().isoformat(),
             "remaining_beds": remaining_beds,
+            "shelf_pose": shelf_pose,
         }
         task.status = TaskStatus.SHELF_DROPPED
 
@@ -525,6 +544,7 @@ class TaskEngine:
 
                 # Start shelf monitor after first successful move_shelf
                 if api_result.success and self._shelf_monitor_task is None:
+                    self._current_shelf_id = cmd.shelf_id
                     self._shelf_monitor_stop = False
                     self._shelf_dropped = False
                     self._shelf_monitor_task = asyncio.create_task(self._monitor_shelf())
