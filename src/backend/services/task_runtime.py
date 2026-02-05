@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 import grpc.aio
 from services.fleet_api import FleetAPI
@@ -60,6 +60,9 @@ class TaskEngine:
         self.robot_id = robot_id
         self._shelf_names: Dict[str, str] = {}
         self._location_names: Dict[str, str] = {}
+        self._shelf_dropped = False
+        self._shelf_monitor_stop = False
+        self._shelf_monitor_task: Optional[asyncio.Task] = None
 
     async def _refresh_name_cache(self):
         """Fetch shelf/location names from robot for readable logs"""
@@ -85,6 +88,165 @@ class TaskEngine:
                 parts.append(f"{k}={v}")
         return ", ".join(parts)
 
+    async def _monitor_shelf(self):
+        """Background coroutine that polls get_moving_shelves_id() every 3s.
+        Sets _shelf_dropped flag if the robot no longer carries a shelf."""
+        logger.info(f"[SHELF MONITOR] Started for robot {self.robot_id}")
+        while not self._shelf_monitor_stop:
+            await asyncio.sleep(3)
+            if self._shelf_monitor_stop:
+                break
+            try:
+                shelf_id = await self.fleet.get_moving_shelves_id(self.robot_id)
+                if not shelf_id:
+                    logger.warning(f"[SHELF MONITOR] Robot {self.robot_id} no longer carrying a shelf — shelf dropped!")
+                    self._shelf_dropped = True
+                    break
+            except Exception as e:
+                logger.debug(f"[SHELF MONITOR] Transient error polling shelf for robot {self.robot_id}: {e}")
+        logger.info(f"[SHELF MONITOR] Stopped for robot {self.robot_id}")
+
+    async def _stop_shelf_monitor(self):
+        """Stop the shelf monitor background task."""
+        self._shelf_monitor_stop = True
+        if self._shelf_monitor_task is not None:
+            self._shelf_monitor_task.cancel()
+            try:
+                await self._shelf_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._shelf_monitor_task = None
+        logger.info(f"[SHELF MONITOR] Cleaned up for robot {self.robot_id}")
+
+    async def _handle_shelf_drop(self, task: Task, step_index: int,
+                                   trigger_step: Optional["TaskStep"] = None,
+                                   error_code: int = 0):
+        """Handle shelf drop: collect remaining beds, notify, record DB, send robot home."""
+        await self._stop_shelf_monitor()
+
+        source = f"error {error_code}" if error_code else "polling monitor"
+        logger.error(f"[SHELF DROP] Detected via {source} on robot {self.robot_id}, pausing task")
+
+        location_id = trigger_step.params.get("location_id", "unknown") if trigger_step else "unknown"
+        shelf_id = trigger_step.params.get("shelf_id", "unknown") if trigger_step else "unknown"
+
+        # Collect remaining unprocessed beds
+        remaining_beds = []
+        collected_step_ids = set()
+
+        # Current bed: from skip_on_failure bio_scan step of trigger
+        if trigger_step and trigger_step.skip_on_failure:
+            for skip_id in trigger_step.skip_on_failure:
+                skip_step = next((s for s in task.steps if s.step_id == skip_id), None)
+                if skip_step and skip_step.action == "bio_scan":
+                    remaining_beds.append({
+                        "bed_key": skip_step.params.get("bed_key", ""),
+                        "location_id": location_id,
+                    })
+                    collected_step_ids.add(skip_id)
+
+        # Future pending bio_scan steps
+        for future_step in task.steps[step_index + 1:]:
+            if (future_step.action == "bio_scan"
+                    and future_step.status == StepStatus.PENDING
+                    and future_step.step_id not in collected_step_ids):
+                future_loc = ""
+                for ms in task.steps:
+                    if ms.action == "move_shelf" and ms.skip_on_failure and future_step.step_id in ms.skip_on_failure:
+                        future_loc = ms.params.get("location_id", "")
+                        break
+                remaining_beds.append({
+                    "bed_key": future_step.params.get("bed_key", ""),
+                    "location_id": future_loc,
+                })
+
+        # If no trigger step (polling detection), also include the current executing bio_scan
+        if not trigger_step:
+            current_step = task.steps[step_index] if step_index < len(task.steps) else None
+            if current_step and current_step.action == "bio_scan" and current_step.status == StepStatus.EXECUTING:
+                remaining_beds.insert(0, {
+                    "bed_key": current_step.params.get("bed_key", ""),
+                    "location_id": getattr(self, "target_bed", ""),
+                })
+
+        # Store shelf-drop context in task metadata
+        task.metadata = {
+            "shelf_drop": True,
+            "shelf_id": shelf_id,
+            "bed_key": location_id,
+            "room": location_id,
+            "dropped_at": get_now().isoformat(),
+            "remaining_beds": remaining_beds,
+        }
+        task.status = TaskStatus.SHELF_DROPPED
+
+        # Send Telegram notification
+        try:
+            from services.telegram_service import send_telegram_message
+            await send_telegram_message("⚠️ 貨架掉落，請協助歸位")
+        except Exception as tg_err:
+            logger.error(f"Failed to send shelf-drop Telegram: {tg_err}")
+
+        # Record skipped bio_scan steps to DB
+        if trigger_step and trigger_step.skip_on_failure:
+            for skip_id in trigger_step.skip_on_failure:
+                skip_step = next((s for s in task.steps if s.step_id == skip_id), None)
+                if skip_step and skip_step.action == "bio_scan":
+                    try:
+                        client = get_bio_sensor_client()
+                        if client:
+                            error_data = {
+                                "status": "N/A",
+                                "bpm": None,
+                                "rpm": None,
+                                "details": "貨架掉落，巡房中斷",
+                                "bed_id": getattr(self, "target_bed", ""),
+                                "bed_name": skip_step.params.get("bed_key"),
+                            }
+                            client._save_scan_data(
+                                task_id=self.current_task_id,
+                                data=error_data,
+                                retry_count=0,
+                                is_valid=False,
+                            )
+                            skip_step.status = StepStatus.SKIPPED
+                            logger.info(f"[SHELF DROP] Recorded skipped bio_scan {skip_id} in database")
+                    except Exception as db_err:
+                        logger.error(f"[SHELF DROP] Failed to record skipped bio_scan: {db_err}")
+
+        # Mark remaining unprocessed bio_scan steps
+        for remaining in task.steps[step_index + 1:]:
+            if remaining.action == "bio_scan" and remaining.status == StepStatus.PENDING:
+                try:
+                    client = get_bio_sensor_client()
+                    if client:
+                        error_data = {
+                            "status": "N/A",
+                            "bpm": None,
+                            "rpm": None,
+                            "details": "貨架掉落，巡房中斷",
+                            "bed_id": remaining.params.get("location_id", ""),
+                            "bed_name": remaining.params.get("bed_key"),
+                        }
+                        client._save_scan_data(
+                            task_id=self.current_task_id,
+                            data=error_data,
+                            retry_count=0,
+                            is_valid=False,
+                        )
+                        remaining.status = StepStatus.SKIPPED
+                        logger.info(f"[SHELF DROP] Recorded skipped bio_scan {remaining.step_id} in database")
+                except Exception as db_err:
+                    logger.error(f"[SHELF DROP] Failed to record skipped bio_scan: {db_err}")
+
+        # Robot return home
+        try:
+            cmd = DefaultCmd()
+            await self.fleet.return_home(self.robot_id, cmd)
+            logger.info(f"[SHELF DROP] Robot {self.robot_id} sent home")
+        except Exception as rh_err:
+            logger.error(f"[SHELF DROP] Failed to send robot home: {rh_err}")
+
     async def run_task(self, task: Task) -> Task:
         logger.info(f"===> Starting task: {task.task_id} on robot {task.robot_id}")
         await self._refresh_name_cache()
@@ -92,6 +254,9 @@ class TaskEngine:
         current_tasks[task.robot_id] = task.task_id # Mark robot as busy
         self.current_task_id = task.task_id
         self.task_start_time = get_now().strftime("%Y%m%d%H%M%S")
+        self._shelf_dropped = False
+        self._shelf_monitor_stop = False
+        self._shelf_monitor_task = None
 
         try:
             step_index = 0
@@ -103,6 +268,11 @@ class TaskEngine:
 
                 if task.status == TaskStatus.CANCELLED:
                     logger.info(f"[!] Task {task.task_id} on robot {self.robot_id} cancelled mid-execution")
+                    break
+
+                # --- SHELF DROP via polling monitor ---
+                if self._shelf_dropped:
+                    await self._handle_shelf_drop(task, step_index)
                     break
 
                 # Check if this step should be skipped
@@ -174,89 +344,7 @@ class TaskEngine:
 
                         # --- SHELF DROP DETECTION (error 14606 / 10001 / 11005) ---
                         if step.action in ("move_shelf", "return_shelf") and step_result.error_code in (14606, 10001, 11005):
-                            logger.error(f"[SHELF DROP] Error {step_result.error_code} detected on robot {self.robot_id}, pausing task")
-
-                            # Extract room info from location_id
-                            location_id = step.params.get("location_id", "unknown")
-                            shelf_id = step.params.get("shelf_id", "unknown")
-
-                            # Store shelf-drop context in task metadata
-                            task.metadata = {
-                                "shelf_drop": True,
-                                "shelf_id": shelf_id,
-                                "bed_key": location_id,
-                                "room": location_id,
-                                "dropped_at": get_now().isoformat(),
-                            }
-                            task.status = TaskStatus.SHELF_DROPPED
-
-                            # Send Telegram notification immediately
-                            try:
-                                from services.telegram_service import send_telegram_message
-                                await send_telegram_message("⚠️ 貨架掉落，請協助歸位")
-                            except Exception as tg_err:
-                                logger.error(f"Failed to send shelf-drop Telegram: {tg_err}")
-
-                            # Record skipped bio_scan steps to DB
-                            if step.skip_on_failure:
-                                for skip_id in step.skip_on_failure:
-                                    skip_step = next((s for s in task.steps if s.step_id == skip_id), None)
-                                    if skip_step and skip_step.action == "bio_scan":
-                                        try:
-                                            client = get_bio_sensor_client()
-                                            if client:
-                                                error_data = {
-                                                    "status": "N/A",
-                                                    "bpm": None,
-                                                    "rpm": None,
-                                                    "details": "貨架掉落，巡房中斷",
-                                                    "bed_id": self.target_bed,
-                                                    "bed_name": skip_step.params.get("bed_key"),
-                                                }
-                                                client._save_scan_data(
-                                                    task_id=self.current_task_id,
-                                                    data=error_data,
-                                                    retry_count=0,
-                                                    is_valid=False,
-                                                )
-                                                skip_step.status = StepStatus.SKIPPED
-                                                logger.info(f"[SHELF DROP] Recorded skipped bio_scan {skip_id} in database")
-                                        except Exception as db_err:
-                                            logger.error(f"[SHELF DROP] Failed to record skipped bio_scan: {db_err}")
-
-                                # Also mark remaining unprocessed bio_scan steps
-                                for remaining in task.steps[step_index + 1:]:
-                                    if remaining.action == "bio_scan" and remaining.status == StepStatus.PENDING:
-                                        try:
-                                            client = get_bio_sensor_client()
-                                            if client:
-                                                error_data = {
-                                                    "status": "N/A",
-                                                    "bpm": None,
-                                                    "rpm": None,
-                                                    "details": "貨架掉落，巡房中斷",
-                                                    "bed_id": remaining.params.get("location_id", ""),
-                                                    "bed_name": remaining.params.get("bed_key"),
-                                                }
-                                                client._save_scan_data(
-                                                    task_id=self.current_task_id,
-                                                    data=error_data,
-                                                    retry_count=0,
-                                                    is_valid=False,
-                                                )
-                                                remaining.status = StepStatus.SKIPPED
-                                                logger.info(f"[SHELF DROP] Recorded skipped bio_scan {remaining.step_id} in database")
-                                        except Exception as db_err:
-                                            logger.error(f"[SHELF DROP] Failed to record skipped bio_scan: {db_err}")
-
-                            # Robot return home
-                            try:
-                                cmd = DefaultCmd()
-                                await self.fleet.return_home(self.robot_id, cmd)
-                                logger.info(f"[SHELF DROP] Robot {self.robot_id} sent home")
-                            except Exception as rh_err:
-                                logger.error(f"[SHELF DROP] Failed to send robot home: {rh_err}")
-
+                            await self._handle_shelf_drop(task, step_index, trigger_step=step, error_code=step_result.error_code)
                             break  # Pause the task
 
                         # Handle conditional logic: add steps to skip list if this step failed
@@ -318,6 +406,7 @@ class TaskEngine:
                 logger.info(f"===> Task {task.task_id} completed successfully on robot {self.robot_id}")
 
         finally:
+            await self._stop_shelf_monitor()
             # Always send patrol summary when task ends
             try:
                 from services.telegram_service import send_telegram_message
@@ -434,6 +523,12 @@ class TaskEngine:
                     lambda: self.fleet.move_shelf(self.robot_id, cmd)
                 )
 
+                # Start shelf monitor after first successful move_shelf
+                if api_result.success and self._shelf_monitor_task is None:
+                    self._shelf_monitor_stop = False
+                    self._shelf_dropped = False
+                    self._shelf_monitor_task = asyncio.create_task(self._monitor_shelf())
+
                 return StepResult(
                     success=api_result.success,
                     error_code=api_result.error_code,
@@ -447,6 +542,10 @@ class TaskEngine:
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.return_shelf(self.robot_id, cmd)
                 )
+
+                # Stop shelf monitor after successful return_shelf
+                if api_result.success:
+                    await self._stop_shelf_monitor()
 
                 return StepResult(
                     success=api_result.success,
