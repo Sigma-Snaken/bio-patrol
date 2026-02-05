@@ -649,6 +649,37 @@ body::after {
     box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.1);
 }
 
+.input-with-btn {
+    display: flex;
+    gap: 6px;
+}
+.input-with-btn input {
+    flex: 1;
+    min-width: 0;
+}
+.input-with-btn .btn-secondary {
+    white-space: nowrap;
+    padding: 8px 12px;
+    flex-shrink: 0;
+}
+
+.shelf-dropdown {
+    margin-top: 6px;
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--panel-light);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    transition: all 0.2s ease;
+}
+.shelf-dropdown:focus {
+    outline: none;
+    border-color: var(--amber);
+    box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.1);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    SETTINGS TWO-COLUMN LAYOUT
    ═══════════════════════════════════════════════════════════════════════════ */

@@ -23,6 +23,7 @@ DEFAULT_SETTINGS = {
     "active_map": "",
     "shelf_id": "S_04",
     "demo_preset": "",
+    "timezone": "Asia/Taipei",
 }
 
 DEFAULT_BEDS = {

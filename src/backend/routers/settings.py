@@ -86,7 +86,9 @@ async def get_patrol():
 
 @router.post("/patrol")
 async def save_patrol(body: dict):
-    """Save patrol.json."""
+    """Save patrol.json. beds_order is sorted by bed_key."""
+    if "beds_order" in body:
+        body["beds_order"] = sorted(body["beds_order"], key=lambda b: b.get("bed_key", ""))
     save_json(PATROL_FILE, body)
     return {"status": "ok", "data": body}
 
@@ -280,7 +282,7 @@ async def start_patrol(req: PatrolStartRequest):
             action_step = TaskStep(
                 step_id=action_step_id,
                 action="bio_scan",
-                params={},
+                params={"bed_key": bed_key},
                 status=StepStatus.PENDING,
             )
         steps.append(action_step)
@@ -312,23 +314,21 @@ async def start_patrol(req: PatrolStartRequest):
 
 class RecoverShelfRequest(BaseModel):
     shelf_id: str
-    location_id: str
 
 
 @router.post("/patrol/recover-shelf")
 async def recover_shelf(req: RecoverShelfRequest):
     """
-    Recovery endpoint after shelf-drop (error 14606).
-    Robot re-finds and moves the shelf to the given location.
+    Recovery endpoint: reset shelf pose so the robot can re-dock it.
+    Uses reset_shelf_pose (not move_shelf) — only needs shelf_id.
     """
     try:
         from dependencies import get_fleet
-        from services.fleet_api import MoveShelfCmd
+        from services.fleet_api import ResetShelfPoseCmd
         fleet = get_fleet()
-        cmd = MoveShelfCmd()
+        cmd = ResetShelfPoseCmd()
         cmd.shelf_id = req.shelf_id
-        cmd.location_id = req.location_id
-        result = await fleet.move_shelf("kachaka", cmd)
+        result = await fleet.reset_shelf_pose("kachaka", cmd)
 
         if result.success:
             # Clear shelf_drop status from any active task
@@ -336,7 +336,7 @@ async def recover_shelf(req: RecoverShelfRequest):
                 if task.status and task.status.value == "shelf_dropped":
                     task.status = TaskStatus.DONE
                     break
-            return {"status": "ok", "message": "Shelf recovered successfully"}
+            return {"status": "ok", "message": "Shelf pose reset successfully"}
         else:
             return {"status": "error", "message": f"Recovery failed: error {result.error_code}"}
     except Exception as e:

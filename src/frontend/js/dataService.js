@@ -89,10 +89,9 @@ class DataService {
     return res.data;
   }
 
-  async recoverShelf(shelfId, locationId) {
+  async recoverShelf(shelfId) {
     const res = await axios.post('/api/patrol/recover-shelf', {
-      shelf_id: shelfId,
-      location_id: locationId
+      shelf_id: shelfId
     });
     return res.data;
   }
@@ -248,10 +247,9 @@ class DataService {
     return res.data;
   }
 
-  async resetShelfPose(shelfId, locationId) {
+  async resetShelfPose(shelfId) {
     const res = await axios.post(`/kachaka/${this.robotId}/command/reset_shelf_pose`, {
       shelf_id: shelfId,
-      location_id: locationId,
       cancel_all: true
     });
     return res.data;

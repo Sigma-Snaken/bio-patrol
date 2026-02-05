@@ -70,6 +70,26 @@ function toggleFrame(frameId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HEADER CLOCK
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _cachedTimezone = null;
+
+function updateHeaderClock() {
+  const el = document.getElementById('header-clock');
+  if (!el) return;
+  // Read timezone from the setting select (live), with cached fallback
+  const tzSelect = document.getElementById('setting-timezone');
+  if (tzSelect && tzSelect.value) _cachedTimezone = tzSelect.value;
+  const tz = _cachedTimezone || 'Asia/Taipei';
+  try {
+    el.textContent = new Date().toLocaleTimeString('en-GB', { timeZone: tz, hour12: false });
+  } catch {
+    el.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -94,6 +114,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Start polling
   startPolling();
+
+  // Start header clock
+  updateHeaderClock();
+  setInterval(updateHeaderClock, 1000);
 
   // Start map animation
   animateMap();
@@ -144,10 +168,8 @@ async function fetchRobotStatus() {
       }
     }
 
-    // Update status
+    // Update connection indicator
     robotData.status = 'online';
-    const statusEl = document.getElementById('robot-status-value');
-    if (statusEl) statusEl.textContent = 'Online';
     const connEl = document.getElementById('connection-status');
     if (connEl) {
       connEl.classList.remove('disconnected');
@@ -155,8 +177,6 @@ async function fetchRobotStatus() {
     }
   } catch (e) {
     robotData.status = 'offline';
-    const statusEl = document.getElementById('robot-status-value');
-    if (statusEl) statusEl.textContent = 'Offline';
     const connEl = document.getElementById('connection-status');
     if (connEl) {
       connEl.classList.remove('connected');
@@ -208,11 +228,7 @@ async function recoverShelf() {
     const settings = await dataService.getSettings();
     const shelfId = settings?.shelf_id || 'S_04';
 
-    // Get the shelf-dropped task for location info
-    const shelfDropTask = tasks.find(t => t.status === 'shelf_dropped');
-    const locationId = shelfDropTask?.metadata?.location_id || '';
-
-    const result = await dataService.recoverShelf(shelfId, locationId);
+    const result = await dataService.recoverShelf(shelfId);
     if (statusEl) statusEl.textContent = 'Recovery successful!';
     setTimeout(() => {
       document.getElementById('shelf-drop-overlay').style.display = 'none';
@@ -266,7 +282,7 @@ function renderPatrolHistory() {
                         t.status === 'running' ? 'var(--amber)' : 'var(--text-muted)';
     const time = t.created_at ? new Date(t.created_at).toLocaleString() : '--';
     return `<div style="padding:6px 0;border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;font-size:12px;">
-      <span>${t.task_id}</span>
+      <span>${time}</span>
       <span style="color:${statusColor};font-weight:600;">${t.status}</span>
     </div>`;
   }).join('');
@@ -275,7 +291,9 @@ function renderPatrolHistory() {
 // Quick actions
 async function resetShelfSensor() {
   try {
-    await dataService.resetShelfPose('S04', '');
+    const settings = await dataService.getSettings();
+    const shelfId = settings?.shelf_id || 'S_04';
+    await dataService.resetShelfPose(shelfId);
     alert('生理感測器歸位成功');
   } catch (e) {
     alert('歸位失敗: ' + (e.message || e));
@@ -293,7 +311,7 @@ async function returnHome() {
 async function startDemoRun() {
   try {
     const res = await dataService.startPatrol('demo');
-    alert('Demo Run started! Task: ' + (res.task_id || 'created'));
+    alert('Demo Run started!');
   } catch (e) {
     alert('Failed to start demo run: ' + (e.message || e));
   }
@@ -302,7 +320,7 @@ async function startDemoRun() {
 async function startPatrol() {
   try {
     const res = await dataService.startPatrol('patrol');
-    alert('Patrol started! Task: ' + (res.task_id || 'created'));
+    alert('Patrol started!');
   } catch (e) {
     alert('Failed to start patrol: ' + (e.message || e));
   }
@@ -1039,11 +1057,12 @@ let sensorData = [];
 
 async function loadSensorData() {
   try {
-    const bedFilter = document.getElementById('sensor-filter-bed')?.value || '';
+    const dateFilter = document.getElementById('sensor-filter-date')?.value || '';
     const limit = parseInt(document.getElementById('sensor-filter-limit')?.value) || 100;
 
     const params = { limit };
-    if (bedFilter) params.task_id = bedFilter;
+    // Convert "2026-02-05" → "20260205" prefix to match task_id format
+    if (dateFilter) params.task_id = dateFilter.replace(/-/g, '');
 
     const res = await dataService.getSensorHistory(params);
     sensorData = res.data || [];
@@ -1053,6 +1072,12 @@ async function loadSensorData() {
   } catch (e) {
     console.error('Failed to load sensor data:', e);
   }
+}
+
+function clearSensorFilter() {
+  const dateEl = document.getElementById('sensor-filter-date');
+  if (dateEl) dateEl.value = '';
+  loadSensorData();
 }
 
 function updateSensorStats() {
@@ -1069,27 +1094,40 @@ function updateSensorStats() {
   el('stat-avg-bpm', avgBpm);
 }
 
+function formatTaskId(taskId) {
+  if (!taskId) return '--';
+  // Parse "YYYYMMDDHHmmSS" → "YYYY/MM/DD HH:mm:SS"
+  if (/^\d{14}$/.test(taskId)) {
+    return `${taskId.slice(0,4)}/${taskId.slice(4,6)}/${taskId.slice(6,8)} ${taskId.slice(8,10)}:${taskId.slice(10,12)}:${taskId.slice(12,14)}`;
+  }
+  // Fallback for old UUID-style task_ids
+  return taskId.slice(0, 8);
+}
+
 function renderSensorTable() {
   const tbody = document.getElementById('sensor-table-body');
   if (!tbody) return;
 
   if (sensorData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">No data</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);">No data</td></tr>';
     return;
   }
 
   tbody.innerHTML = sensorData.map(d => {
+    const patrol = formatTaskId(d.task_id);
     const time = d.timestamp ? new Date(d.timestamp).toLocaleString() : '--';
     const validClass = d.is_valid ? 'status-valid' : 'status-invalid';
     return `<tr>
+      <td>${patrol}</td>
       <td>${time}</td>
-      <td>${d.task_id || '--'}</td>
+      <td>${d.bed_name || '--'}</td>
       <td>${d.bed_id || '--'}</td>
       <td>${d.retry_count ?? '--'}</td>
       <td>${d.status ?? '--'}</td>
       <td>${d.bpm ?? '--'}</td>
       <td>${d.rpm ?? '--'}</td>
       <td class="${validClass}">${d.is_valid ? 'Valid' : 'Invalid'}</td>
+      <td>${d.details || '--'}</td>
     </tr>`;
   }).join('');
 }
@@ -1100,7 +1138,7 @@ function exportSensorCSV() {
     return;
   }
 
-  const headers = ['timestamp', 'task_id', 'bed_id', 'retry_count', 'status', 'bpm', 'rpm', 'is_valid'];
+  const headers = ['task_id', 'timestamp', 'bed_name', 'bed_id', 'retry_count', 'status', 'bpm', 'rpm', 'is_valid', 'details'];
   const rows = sensorData.map(d =>
     headers.map(h => JSON.stringify(d[h] ?? '')).join(',')
   );
@@ -1137,7 +1175,47 @@ const SETTINGS_MAP = [
   { id: 'setting-telegram-bot-token', key: 'telegram_bot_token' },
   { id: 'setting-telegram-user-id', key: 'telegram_user_id' },
   { id: 'setting-gemini-api-key', key: 'gemini_api_key' },
+  { id: 'setting-timezone', key: 'timezone' },
 ];
+
+async function fetchShelves() {
+  const btn = document.getElementById('btn-fetch-shelves');
+  const select = document.getElementById('shelf-select');
+  const original = btn.textContent;
+  btn.textContent = 'Loading...';
+  btn.disabled = true;
+
+  try {
+    const shelves = await dataService.getRobotShelves();
+    select.innerHTML = '<option value="">-- Select a shelf --</option>';
+    shelves.forEach(s => {
+      const id = s.id || s.shelf_id || '';
+      const name = s.name || id;
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = `${name} (${id})`;
+      select.appendChild(opt);
+    });
+
+    // Pre-select current value
+    const current = document.getElementById('setting-shelf-id').value;
+    if (current) select.value = current;
+
+    select.style.display = '';
+  } catch (e) {
+    alert('Failed to fetch shelves: ' + e.message);
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+
+function applyShelfSelection() {
+  const select = document.getElementById('shelf-select');
+  if (select.value) {
+    document.getElementById('setting-shelf-id').value = select.value;
+  }
+}
 
 async function loadSettings() {
   try {

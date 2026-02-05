@@ -113,6 +113,15 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(task_worker(robot_id))
             logger.info(f"Robot '{robot_id}' registered at {robot_ip}")
             await available_robots_queue.put(robot_id)
+
+            # Fetch and cache robot error codes for richer error messages
+            try:
+                from common_types import load_robot_error_codes
+                error_codes = await fleet_client.get_error_code(robot_id)
+                load_robot_error_codes(error_codes)
+                logger.info(f"Loaded {len(error_codes)} error codes from robot '{robot_id}'")
+            except Exception as ec_err:
+                logger.warning(f"Failed to load error codes from robot '{robot_id}': {ec_err}")
         except Exception as e:
             logger.error(f"Failed to register robot '{robot_id}': {e}")
             logger.info(f"Continuing with graceful degradation for robot {robot_id}")

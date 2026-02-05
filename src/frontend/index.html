@@ -23,12 +23,12 @@
     </div>
     <div class="status-bar">
       <span class="status-item">
-        <span class="label">Battery</span>
-        <span class="value" id="battery-value">--%</span>
+        <span class="label">Time</span>
+        <span class="value" id="header-clock">--:--:--</span>
       </span>
       <span class="status-item">
-        <span class="label">Status</span>
-        <span class="value" id="robot-status-value">--</span>
+        <span class="label">Battery</span>
+        <span class="value" id="battery-value">--%</span>
       </span>
       <div class="connection-light" id="connection-status" title="Connection"></div>
     </div>
@@ -231,11 +231,12 @@
 
       <!-- Filter Controls -->
       <div class="sensor-controls">
-        <label>Bed ID</label>
-        <input type="text" id="sensor-filter-bed" placeholder="Filter by bed...">
+        <label>Date</label>
+        <input type="date" id="sensor-filter-date">
         <label>Limit</label>
         <input type="number" id="sensor-filter-limit" value="100" min="1" max="500" style="width:80px;">
         <button class="btn-secondary" onclick="loadSensorData()">Search</button>
+        <button class="btn-secondary" onclick="clearSensorFilter()">Clear</button>
         <button class="btn-secondary" onclick="exportSensorCSV()">Export CSV</button>
       </div>
 
@@ -244,14 +245,16 @@
         <table class="data-table" id="sensor-table">
           <thead>
             <tr>
+              <th>Patrol</th>
               <th>Time</th>
-              <th>Task ID</th>
+              <th>Bed</th>
               <th>Bed ID</th>
               <th>Retry</th>
               <th>Status</th>
               <th>BPM</th>
               <th>RPM</th>
               <th>Valid</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody id="sensor-table-body">
@@ -273,7 +276,11 @@
             </div>
             <div class="form-group">
               <label>Shelf ID</label>
-              <input type="text" id="setting-shelf-id" placeholder="e.g. S_04">
+              <div class="input-with-btn">
+                <input type="text" id="setting-shelf-id" placeholder="e.g. S_04">
+                <button type="button" class="btn-secondary" id="btn-fetch-shelves" onclick="fetchShelves()">Get Shelves</button>
+              </div>
+              <select id="shelf-select" class="shelf-dropdown" style="display:none;" onchange="applyShelfSelection()"></select>
             </div>
           </div>
 
@@ -354,6 +361,23 @@
             <div class="form-group">
               <label>User ID</label>
               <input type="text" id="setting-telegram-user-id" placeholder="Enter user ID">
+            </div>
+          </div>
+
+          <div class="glass-panel">
+            <h3>General</h3>
+            <div class="form-group">
+              <label>Timezone</label>
+              <select id="setting-timezone">
+                <option value="Asia/Taipei">Asia/Taipei (UTC+8)</option>
+                <option value="Asia/Tokyo">Asia/Tokyo (UTC+9)</option>
+                <option value="Asia/Shanghai">Asia/Shanghai (UTC+8)</option>
+                <option value="Asia/Singapore">Asia/Singapore (UTC+8)</option>
+                <option value="America/New_York">America/New_York (UTC-5)</option>
+                <option value="America/Los_Angeles">America/Los_Angeles (UTC-8)</option>
+                <option value="Europe/London">Europe/London (UTC+0)</option>
+                <option value="UTC">UTC</option>
+              </select>
             </div>
           </div>
 
