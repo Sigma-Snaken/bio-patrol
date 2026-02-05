@@ -13,7 +13,7 @@ import sys
 import traceback
 
 from services.task_runtime import (
-    engines, task_queues, available_robots_queue, dispatcher, task_worker, TaskEngine
+    engines, task_queues, task_worker, TaskEngine
 )
 from services.scheduler import scheduler_service
 from dependencies import get_fleet, get_bio_sensor_client
@@ -112,8 +112,6 @@ async def lifespan(app: FastAPI):
             task_queues[robot_id] = asyncio.Queue()
             asyncio.create_task(task_worker(robot_id))
             logger.info(f"Robot '{robot_id}' registered at {robot_ip}")
-            await available_robots_queue.put(robot_id)
-
             # Fetch and cache robot error codes for richer error messages
             try:
                 from common_types import load_robot_error_codes
@@ -125,9 +123,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to register robot '{robot_id}': {e}")
             logger.info(f"Continuing with graceful degradation for robot {robot_id}")
-
-        logger.info("Application startup: Initializing dispatcher.")
-        asyncio.create_task(dispatcher())
 
         # Start task scheduler
         logger.info("Starting task scheduler...")

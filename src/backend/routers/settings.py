@@ -22,7 +22,7 @@ from utils.json_io import load_json, save_json
 from common_types import (
     Task, TaskStep, TaskStatus, StepStatus, generate_task_id,
 )
-from services.task_runtime import tasks_db, global_queue
+from services.task_runtime import tasks_db, submit_task
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +303,7 @@ async def start_patrol(req: PatrolStartRequest):
         status=TaskStatus.QUEUED,
     )
     tasks_db[task.task_id] = task
-    asyncio.create_task(global_queue.put(task))
+    await submit_task(task)
     logger.info(f"Patrol started (mode={req.mode}): task {task.task_id} with {len(enabled_beds)} beds")
     return {"status": "ok", "task_id": task.task_id, "mode": req.mode, "beds_count": len(enabled_beds)}
 
@@ -359,7 +359,7 @@ async def resume_patrol(req: ResumePatrolRequest):
     1. Reset shelf pose
     2. Mark old task as DONE
     3. Create new task with remaining beds
-    4. Queue via global_queue
+    4. Submit via submit_task()
     """
     old_task = tasks_db.get(req.task_id)
     if not old_task:
@@ -440,7 +440,7 @@ async def resume_patrol(req: ResumePatrolRequest):
     tasks_db[new_task.task_id] = new_task
 
     # Step 4: Queue
-    asyncio.create_task(global_queue.put(new_task))
+    await submit_task(new_task)
     logger.info(f"Resume patrol: new task {new_task.task_id} with {len(remaining_beds)} beds (from {req.task_id})")
 
     return {

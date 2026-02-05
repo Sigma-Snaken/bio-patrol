@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException
 router = APIRouter(prefix='/api', tags=['Tasks Scheduler'])
 
 import uuid
-import asyncio
 
 import logging
 logger = logging.getLogger(__name__)
@@ -10,7 +9,7 @@ logger = logging.getLogger(__name__)
 from typing import List
 
 from common_types import Task, TaskStatus, validate_task_conditional_logic
-from services.task_runtime import tasks_db, global_queue, current_tasks
+from services.task_runtime import tasks_db, submit_task, current_tasks
 
 
 # --- RESTful APIs Interfaces ---
@@ -36,10 +35,8 @@ async def create_task(task_input: Task):
         status=TaskStatus.QUEUED,
         robot_id=task_input.robot_id  # Preserve robot_id from input
     )
-    tasks_db[task_id] = new_task
-    # Use asyncio.create_task for non-blocking put if global_queue could be full (though default is infinite)
-    asyncio.create_task(global_queue.put(new_task)) 
-    logger.info(f"Task {task_id} created and added to global_queue.")
+    await submit_task(new_task)
+    logger.info(f"Task {task_id} created and submitted.")
     return new_task
 
 @router.get("/tasks", response_model=List[Task])
@@ -72,10 +69,8 @@ async def cancel_task(task_id: str):
     tasks_db[task_id] = task # Update in DB
     logger.info(f"Task {task_id} status set to CANCELLED.")
     
-    # If task was in a robot's specific queue but not yet started by worker,
+    # If task was in the robot's queue but not yet started by worker,
     # the worker will see CANCELLED status when it picks it up.
-    # If it was in global_queue, dispatcher might still pick it up, assign robot_id,
-    # then worker will see CANCELLED.
     # If it was IN_PROGRESS, TaskEngine's step loop will see CANCELLED.
     return task
 

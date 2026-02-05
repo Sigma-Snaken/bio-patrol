@@ -110,7 +110,7 @@ class TaskSchedulerService:
             from settings.defaults import DEFAULT_PATROL, DEFAULT_BEDS
             from utils.json_io import load_json
             from common_types import Task, TaskStep, TaskStatus, StepStatus, generate_task_id
-            from services.task_runtime import tasks_db, global_queue
+            from services.task_runtime import tasks_db, submit_task
 
             patrol_cfg = load_json(PATROL_FILE, DEFAULT_PATROL)
             beds_cfg = load_json(BEDS_FILE, DEFAULT_BEDS)
@@ -164,8 +164,7 @@ class TaskSchedulerService:
                 steps=steps,
                 status=TaskStatus.QUEUED,
             )
-            tasks_db[task.task_id] = task
-            await global_queue.put(task)
+            await submit_task(task)
             logger.info(
                 f"Scheduled patrol '{schedule_id}' created task {task.task_id} "
                 f"with {len(enabled_beds)} beds"

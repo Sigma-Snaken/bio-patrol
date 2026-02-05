@@ -19,8 +19,22 @@ tasks_db: Dict[str, Task] = {}
 engines: Dict[str, "TaskEngine"] = {}
 task_queues: Dict[str, asyncio.Queue] = {}
 current_tasks: Dict[str, str] = {}  # robot_id -> task_id
-global_queue: asyncio.Queue = asyncio.Queue()
-available_robots_queue: asyncio.Queue = asyncio.Queue()
+
+
+async def submit_task(task: Task):
+    """Submit a task for execution. Routes directly to the robot's queue."""
+    robot_id = task.robot_id or "kachaka"
+    task.robot_id = robot_id
+    if robot_id not in task_queues:
+        logger.error(f"Robot '{robot_id}' not registered. Failing task {task.task_id}.")
+        task.status = TaskStatus.FAILED
+        tasks_db[task.task_id] = task
+        return
+    task.status = TaskStatus.QUEUED
+    tasks_db[task.task_id] = task
+    await task_queues[robot_id].put(task)
+    logger.info(f"Task {task.task_id} submitted to robot {robot_id}")
+
 
 async def retry_with_backoff(func, max_retries=None, base_delay=None, max_delay=None):
     """Retry function with exponential backoff for robot operations"""
@@ -39,20 +53,16 @@ async def retry_with_backoff(func, max_retries=None, base_delay=None, max_delay=
             return await func()
         except grpc.aio.AioRpcError as e:
             if attempt == max_retries:
-                # Final attempt failed, re-raise the error
                 raise e
-
-            # Check if error is retryable
             if e.code() in [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.RESOURCE_EXHAUSTED]:
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 logger.warning(f"gRPC error {e.code()} ({e.details()}), retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries + 1})")
                 await asyncio.sleep(delay)
             else:
-                # Non-retryable error, re-raise immediately
                 raise e
         except Exception as e:
-            # Non-gRPC error, don't retry
             raise e
+
 
 class TaskEngine:
     def __init__(self, fleet_api: FleetAPI, robot_id: str):
@@ -88,6 +98,8 @@ class TaskEngine:
                 parts.append(f"{k}={v}")
         return ", ".join(parts)
 
+    # ── Shelf monitor ─────────────────────────────────────────────────
+
     async def _monitor_shelf(self):
         """Background coroutine that polls get_moving_shelves_id() every 3s.
         Sets _shelf_dropped flag if the robot no longer carries a shelf."""
@@ -101,7 +113,6 @@ class TaskEngine:
                 if not shelf_id:
                     logger.warning(f"[SHELF MONITOR] Robot {self.robot_id} no longer carrying a shelf — shelf dropped!")
                     self._shelf_dropped = True
-                    # Cancel the in-flight command so the blocked _execute_step returns quickly
                     try:
                         client = self.fleet.manager.get_robot_client(self.robot_id)
                         if client:
@@ -126,13 +137,99 @@ class TaskEngine:
             self._shelf_monitor_task = None
         logger.info(f"[SHELF MONITOR] Cleaned up for robot {self.robot_id}")
 
+    # ── Shelf drop helpers ────────────────────────────────────────────
+
+    async def _query_shelf_pose(self, shelf_id: str) -> Optional[dict]:
+        """Query current shelf position from the robot."""
+        try:
+            shelves = await self.fleet.get_shelves(self.robot_id)
+            from google.protobuf.json_format import MessageToDict
+            for s in shelves:
+                s_dict = MessageToDict(s, preserving_proto_field_name=True)
+                if s_dict.get("id") == shelf_id:
+                    pose = s_dict.get("pose", {})
+                    shelf_pose = {"x": pose.get("x", 0), "y": pose.get("y", 0), "theta": pose.get("theta", 0)}
+                    logger.info(f"[SHELF DROP] Shelf {shelf_id} pose: {shelf_pose}")
+                    return shelf_pose
+        except Exception as e:
+            logger.warning(f"[SHELF DROP] Failed to get shelf pose: {e}")
+        return None
+
+    def _collect_remaining_beds(self, task: Task, step_index: int,
+                                trigger_step: Optional[TaskStep] = None,
+                                location_id: str = "") -> List[dict]:
+        """Collect remaining unprocessed beds from the task steps."""
+        remaining = []
+        collected = set()
+
+        # Current bed: from trigger step's skip_on_failure
+        if trigger_step and trigger_step.skip_on_failure:
+            for skip_id in trigger_step.skip_on_failure:
+                step = next((s for s in task.steps if s.step_id == skip_id), None)
+                if step and step.action == "bio_scan":
+                    remaining.append({"bed_key": step.params.get("bed_key", ""), "location_id": location_id})
+                    collected.add(skip_id)
+
+        # Future unprocessed bio_scan steps
+        for future in task.steps[step_index + 1:]:
+            if (future.action == "bio_scan"
+                    and future.status in (StepStatus.PENDING, StepStatus.SKIPPED)
+                    and future.step_id not in collected):
+                future_loc = ""
+                for ms in task.steps:
+                    if ms.action == "move_shelf" and ms.skip_on_failure and future.step_id in ms.skip_on_failure:
+                        future_loc = ms.params.get("location_id", "")
+                        break
+                remaining.append({"bed_key": future.params.get("bed_key", ""), "location_id": future_loc})
+
+        # If no trigger step (polling detection), include current executing bio_scan
+        if not trigger_step:
+            current = task.steps[step_index] if step_index < len(task.steps) else None
+            if current and current.action == "bio_scan" and current.status == StepStatus.EXECUTING:
+                remaining.insert(0, {
+                    "bed_key": current.params.get("bed_key", ""),
+                    "location_id": getattr(self, "target_bed", ""),
+                })
+
+        return remaining
+
+    def _record_skipped_scan(self, step: TaskStep, details: str,
+                             location_id: str = "", extra_data: dict = None):
+        """Record a skipped bio_scan step in the database."""
+        try:
+            client = get_bio_sensor_client()
+            if not client:
+                logger.warning(f"Cannot record skipped scan {step.step_id} - MQTT client not available")
+                return
+            data = {
+                "status": "N/A",
+                "bpm": None,
+                "rpm": None,
+                "details": details,
+                "location_id": location_id or getattr(self, "target_bed", ""),
+                "bed_name": step.params.get("bed_key"),
+            }
+            if extra_data:
+                data.update(extra_data)
+            client._save_scan_data(
+                task_id=self.current_task_id,
+                data=data,
+                retry_count=0,
+                is_valid=False,
+            )
+            logger.info(f"Recorded skipped bio_scan {step.step_id} in database")
+        except Exception as e:
+            logger.error(f"Failed to record skipped bio_scan {step.step_id}: {e}")
+
+    # ── Shelf drop handler ────────────────────────────────────────────
+
     async def _handle_shelf_drop(self, task: Task, step_index: int,
-                                   trigger_step: Optional["TaskStep"] = None,
+                                   trigger_step: Optional[TaskStep] = None,
                                    error_code: int = 0):
         """Handle shelf drop: collect remaining beds, notify, record DB, send robot home."""
         await self._stop_shelf_monitor()
 
-        # Cancel any in-flight robot command immediately
+        # Cancel any in-flight robot command
         try:
             client = self.fleet.manager.get_robot_client(self.robot_id)
             if client:
@@ -146,63 +243,11 @@ class TaskEngine:
 
         location_id = trigger_step.params.get("location_id", "unknown") if trigger_step else "unknown"
         shelf_id = trigger_step.params.get("shelf_id", "unknown") if trigger_step else "unknown"
-
         if shelf_id == "unknown":
             shelf_id = getattr(self, "_current_shelf_id", "unknown")
 
-        # Query current shelf position
-        shelf_pose = None
-        try:
-            shelves = await self.fleet.get_shelves(self.robot_id)
-            from google.protobuf.json_format import MessageToDict
-            for s in shelves:
-                s_dict = MessageToDict(s, preserving_proto_field_name=True)
-                if s_dict.get("id") == shelf_id:
-                    pose = s_dict.get("pose", {})
-                    shelf_pose = {"x": pose.get("x", 0), "y": pose.get("y", 0), "theta": pose.get("theta", 0)}
-                    logger.info(f"[SHELF DROP] Shelf {shelf_id} pose: {shelf_pose}")
-                    break
-        except Exception as e:
-            logger.warning(f"[SHELF DROP] Failed to get shelf pose: {e}")
-
-        # Collect remaining unprocessed beds
-        remaining_beds = []
-        collected_step_ids = set()
-
-        # Current bed: from skip_on_failure bio_scan step of trigger
-        if trigger_step and trigger_step.skip_on_failure:
-            for skip_id in trigger_step.skip_on_failure:
-                skip_step = next((s for s in task.steps if s.step_id == skip_id), None)
-                if skip_step and skip_step.action == "bio_scan":
-                    remaining_beds.append({
-                        "bed_key": skip_step.params.get("bed_key", ""),
-                        "location_id": location_id,
-                    })
-                    collected_step_ids.add(skip_id)
-
-        # Future unprocessed bio_scan steps (PENDING or SKIPPED due to move failure)
-        for future_step in task.steps[step_index + 1:]:
-            if (future_step.action == "bio_scan"
-                    and future_step.status in (StepStatus.PENDING, StepStatus.SKIPPED)
-                    and future_step.step_id not in collected_step_ids):
-                future_loc = ""
-                for ms in task.steps:
-                    if ms.action == "move_shelf" and ms.skip_on_failure and future_step.step_id in ms.skip_on_failure:
-                        future_loc = ms.params.get("location_id", "")
-                        break
-                remaining_beds.append({
-                    "bed_key": future_step.params.get("bed_key", ""),
-                    "location_id": future_loc,
-                })
-
-        # If no trigger step (polling detection), also include the current executing bio_scan
-        if not trigger_step:
-            current_step = task.steps[step_index] if step_index < len(task.steps) else None
-            if current_step and current_step.action == "bio_scan" and current_step.status == StepStatus.EXECUTING:
-                remaining_beds.insert(0, {
-                    "bed_key": current_step.params.get("bed_key", ""),
-                    "location_id": getattr(self, "target_bed", ""),
-                })
+        shelf_pose = await self._query_shelf_pose(shelf_id)
+        remaining_beds = self._collect_remaining_beds(task, step_index, trigger_step, location_id)
 
         # Store shelf-drop context in task metadata
         task.metadata = {
@@ -216,64 +261,27 @@ class TaskEngine:
         }
         task.status = TaskStatus.SHELF_DROPPED
 
-        # Send Telegram notification
+        # Telegram notification
         try:
             from services.telegram_service import send_telegram_message
             await send_telegram_message("⚠️ 貨架掉落，請協助歸位")
         except Exception as tg_err:
             logger.error(f"Failed to send shelf-drop Telegram: {tg_err}")
 
-        # Record skipped bio_scan steps to DB
+        # Record all skipped bio_scan steps to DB
+        steps_to_skip = []
         if trigger_step and trigger_step.skip_on_failure:
             for skip_id in trigger_step.skip_on_failure:
-                skip_step = next((s for s in task.steps if s.step_id == skip_id), None)
-                if skip_step and skip_step.action == "bio_scan":
-                    try:
-                        client = get_bio_sensor_client()
-                        if client:
-                            error_data = {
-                                "status": "N/A",
-                                "bpm": None,
-                                "rpm": None,
-                                "details": "貨架掉落，巡房中斷",
-                                "location_id": getattr(self, "target_bed", ""),
-                                "bed_name": skip_step.params.get("bed_key"),
-                            }
-                            client._save_scan_data(
-                                task_id=self.current_task_id,
-                                data=error_data,
-                                retry_count=0,
-                                is_valid=False,
-                            )
-                            skip_step.status = StepStatus.SKIPPED
-                            logger.info(f"[SHELF DROP] Recorded skipped bio_scan {skip_id} in database")
-                    except Exception as db_err:
-                        logger.error(f"[SHELF DROP] Failed to record skipped bio_scan: {db_err}")
+                s = next((s for s in task.steps if s.step_id == skip_id), None)
+                if s and s.action == "bio_scan":
+                    steps_to_skip.append(s)
+        for future in task.steps[step_index + 1:]:
+            if future.action == "bio_scan" and future.status == StepStatus.PENDING and future not in steps_to_skip:
+                steps_to_skip.append(future)
 
-        # Mark remaining unprocessed bio_scan steps
-        for remaining in task.steps[step_index + 1:]:
-            if remaining.action == "bio_scan" and remaining.status == StepStatus.PENDING:
-                try:
-                    client = get_bio_sensor_client()
-                    if client:
-                        error_data = {
-                            "status": "N/A",
-                            "bpm": None,
-                            "rpm": None,
-                            "details": "貨架掉落，巡房中斷",
-                            "location_id": remaining.params.get("location_id", ""),
-                            "bed_name": remaining.params.get("bed_key"),
-                        }
-                        client._save_scan_data(
-                            task_id=self.current_task_id,
-                            data=error_data,
-                            retry_count=0,
-                            is_valid=False,
-                        )
-                        remaining.status = StepStatus.SKIPPED
-                        logger.info(f"[SHELF DROP] Recorded skipped bio_scan {remaining.step_id} in database")
-                except Exception as db_err:
-                    logger.error(f"[SHELF DROP] Failed to record skipped bio_scan: {db_err}")
+        for s in steps_to_skip:
+            self._record_skipped_scan(s, "貨架掉落，巡房中斷", location_id=s.params.get("location_id", ""))
+            s.status = StepStatus.SKIPPED
 
         # Robot return home
         try:
@@ -283,11 +291,13 @@ class TaskEngine:
         except Exception as rh_err:
             logger.error(f"[SHELF DROP] Failed to send robot home: {rh_err}")
 
+    # ── Task execution ────────────────────────────────────────────────
+
     async def run_task(self, task: Task) -> Task:
         logger.info(f"===> Starting task: {task.task_id} on robot {task.robot_id}")
         await self._refresh_name_cache()
         task.status = TaskStatus.IN_PROGRESS
-        current_tasks[task.robot_id] = task.task_id # Mark robot as busy
+        current_tasks[task.robot_id] = task.task_id
         self.current_task_id = task.task_id
         self.task_start_time = get_now().strftime("%Y%m%d%H%M%S")
         self._shelf_dropped = False
@@ -296,8 +306,8 @@ class TaskEngine:
 
         try:
             step_index = 0
-            skipped_steps = set()  # Track steps to skip due to conditional logic
-            skip_reasons = {}  # Track the error details that caused steps to be skipped
+            skipped_steps = set()
+            skip_reasons = {}
 
             while step_index < len(task.steps):
                 step = task.steps[step_index]
@@ -315,39 +325,14 @@ class TaskEngine:
                 if step.step_id in skipped_steps:
                     logger.info(f"[SKIP] Robot {self.robot_id}, Step {step.step_id} skipped due to conditional logic")
                     step.status = StepStatus.SKIPPED
-
-                    # Get the error details that caused this step to be skipped
                     skip_reason = skip_reasons.get(step.step_id, {})
 
-                    # Special handling for bio_scan: record error in database
                     if step.action == "bio_scan":
-                        try:
-                            client = get_bio_sensor_client()
-                            if client is None:
-                                logger.warning("[SKIP] Bio scan skipped - MQTT client not available")
-                                step_index += 1
-                                continue
-                            error_data = {
-                                "error_source": skip_reason.get("failed_step_id"),
-                                "original_error_code": skip_reason.get("error_code"),
-                                "original_error_message": skip_reason.get("error_message"),
-                                "status": "N/A",
-                                "bpm": None,
-                                "rpm": None,
-                                "details": "機器人無法移動到床邊",
-                                "location_id": self.target_bed,
-                                "bed_name": step.params.get("bed_key"),
-                            }
-
-                            client._save_scan_data(
-                                task_id=self.current_task_id,
-                                data=error_data,
-                                retry_count=0,
-                                is_valid=False
-                            )
-                            logger.info(f"[SKIP] Bio scan error recorded in database for task {task.task_id}")
-                        except Exception as e:
-                            logger.error(f"[SKIP] Failed to record bio scan error in database: {str(e)}")
+                        self._record_skipped_scan(step, "機器人無法移動到床邊", extra_data={
+                            "error_source": skip_reason.get("failed_step_id"),
+                            "original_error_code": skip_reason.get("error_code"),
+                            "original_error_message": skip_reason.get("error_message"),
+                        })
 
                     step.result = StepResult(
                         success=False,
@@ -373,7 +358,7 @@ class TaskEngine:
                     step.result = step_result
                     step.status = StepStatus.SUCCESS if step_result.success else StepStatus.FAIL
 
-                    # Shelf drop detected during step execution — handle immediately
+                    # Shelf drop detected during step execution
                     if self._shelf_dropped:
                         await self._handle_shelf_drop(task, step_index, trigger_step=step)
                         break
@@ -383,12 +368,9 @@ class TaskEngine:
                     else:
                         logger.warning(f"[!] Robot {self.robot_id}, Step {step.step_id} failed: {step_result.error_message} (code: {step_result.error_code})")
 
-                        # Handle conditional logic: add steps to skip list if this step failed
                         if step.skip_on_failure:
                             skipped_steps.update(step.skip_on_failure)
                             logger.info(f"[CONDITIONAL] Step {step.step_id} failed, will skip steps: {step.skip_on_failure}")
-
-                            # Store error details for each step that will be skipped
                             for skip_step_id in step.skip_on_failure:
                                 skip_reasons[skip_step_id] = {
                                     "failed_step_id": step.step_id,
@@ -396,12 +378,8 @@ class TaskEngine:
                                     "error_message": step_result.error_message,
                                     "original_error": step_result.data,
                                 }
-
-                        # Non-critical actions: failure should NOT terminate the entire task
                         elif step.action in ("bio_scan", "wait", "speak", "return_shelf"):
                             logger.warning(f"[NON-CRITICAL] Step {step.step_id} ({step.action}) failed, continuing to next step")
-
-                        # Critical failure: no skip logic and not a non-critical action
                         else:
                             task.status = TaskStatus.FAILED
                             break
@@ -409,19 +387,16 @@ class TaskEngine:
                 except Exception as e:
                     logger.error(f"[X] Robot {self.robot_id}, Exception in step {step.step_id}: {str(e)}", exc_info=True)
                     step.result = StepResult(
-                        success=False,
-                        error_code=-1,
+                        success=False, error_code=-1,
                         error_message=f"TaskEngine exception: {str(e)}",
                         data={"step_id": step.step_id, "action": step.action},
                         timestamp=get_now().isoformat()
                     )
                     step.status = StepStatus.FAIL
 
-                    # Handle conditional logic for exceptions too
                     if step.skip_on_failure:
                         skipped_steps.update(step.skip_on_failure)
                         logger.info(f"[CONDITIONAL] Step {step.step_id} exception, will skip steps: {step.skip_on_failure}")
-
                         for skip_step_id in step.skip_on_failure:
                             skip_reasons[skip_step_id] = {
                                 "failed_step_id": step.step_id,
@@ -443,7 +418,6 @@ class TaskEngine:
 
         finally:
             await self._stop_shelf_monitor()
-            # Always send patrol summary when task ends
             try:
                 from services.telegram_service import send_telegram_message
                 bio_steps = [s for s in task.steps if s.action == "bio_scan"]
@@ -453,9 +427,10 @@ class TaskEngine:
             except Exception as tg_err:
                 logger.error(f"Failed to send task-completion Telegram: {tg_err}")
             current_tasks.pop(self.robot_id, None)
-            logger.info(f"Robot {self.robot_id} is now free. Signaling availability.")
-            await available_robots_queue.put(self.robot_id)
+            logger.info(f"Robot {self.robot_id} is now free.")
         return task
+
+    # ── Step execution ────────────────────────────────────────────────
 
     def _build_error_context(self, params: Dict[str, Any]) -> Dict[str, str]:
         """Build template context for error message placeholders"""
@@ -470,6 +445,16 @@ class TaskEngine:
             ctx["location"] = f"{name}({location_id})" if name != location_id else location_id
         return ctx
 
+    def _make_result(self, api_result, action: str, error_ctx: dict, data: dict) -> StepResult:
+        """Create StepResult from a robot API result."""
+        return StepResult(
+            success=api_result.success,
+            error_code=api_result.error_code,
+            error_message=get_error_message(api_result.error_code, action, error_ctx),
+            data=data,
+            timestamp=get_now().isoformat()
+        )
+
     async def _execute_step(self, step: TaskStep, skip_reason=None) -> StepResult:
         action = step.action
         params = step.params
@@ -479,81 +464,47 @@ class TaskEngine:
                 cmd = SpeakCmd()
                 cmd.speak_text = params["speak_text"]
                 api_result = await self.fleet.speak(self.robot_id, cmd)
+                return self._make_result(api_result, action, error_ctx, {"speak_text": cmd.speak_text})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={"speak_text": cmd.speak_text},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "move_to_pose":
                 cmd = MoveToPoseCmd()
                 cmd.x = float(params["x"])
                 cmd.y = float(params["y"])
                 cmd.yaw = float(params["yaw"])
                 api_result = await self.fleet.move_to_pose(self.robot_id, cmd)
+                return self._make_result(api_result, action, error_ctx, {"x": cmd.x, "y": cmd.y, "yaw": cmd.yaw})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={"x": cmd.x, "y": cmd.y, "yaw": cmd.yaw},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "move_to_location":
                 cmd = Move2LocationCmd()
                 cmd.location_id = params["location_id"]
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.move_to_location(self.robot_id, cmd),
-                    max_retries=2  # Fewer retries for movement commands
+                    max_retries=2
                 )
+                return self._make_result(api_result, action, error_ctx, {"location_id": cmd.location_id})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={"location_id": cmd.location_id},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "dock_shelf":
                 cmd = DefaultCmd()
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.dock_shelf(self.robot_id, cmd),
                     max_retries=2
                 )
+                return self._make_result(api_result, action, error_ctx, {})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "undock_shelf":
                 cmd = DefaultCmd()
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.undock_shelf(self.robot_id, cmd),
                     max_retries=2
                 )
+                return self._make_result(api_result, action, error_ctx, {})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "move_shelf":
                 cmd = MoveShelfCmd()
                 cmd.shelf_id = params["shelf_id"]
                 cmd.location_id = params["location_id"]
+                self.target_bed = params['location_id']
 
-                # move_shelf always comes before bio_scan
-                # so the context should be preserved for bio_scan.
-                self.target_bed = params['location_id'];
-
-                # Get full pb2.Result from Kachaka API with retry logic
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.move_shelf(self.robot_id, cmd)
                 )
@@ -565,13 +516,8 @@ class TaskEngine:
                     self._shelf_dropped = False
                     self._shelf_monitor_task = asyncio.create_task(self._monitor_shelf())
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={"shelf_id": cmd.shelf_id, "location_id": cmd.location_id},
-                    timestamp=get_now().isoformat()
-                )
+                return self._make_result(api_result, action, error_ctx, {"shelf_id": cmd.shelf_id, "location_id": cmd.location_id})
+
             elif action == "return_shelf":
                 # Stop shelf monitor before return_shelf — no longer needed
                 await self._stop_shelf_monitor()
@@ -581,40 +527,25 @@ class TaskEngine:
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.return_shelf(self.robot_id, cmd)
                 )
+                return self._make_result(api_result, action, error_ctx, {"shelf_id": cmd.shelf_id})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={"shelf_id": cmd.shelf_id},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "return_home":
                 cmd = DefaultCmd()
                 api_result = await self.fleet.return_home(self.robot_id, cmd)
+                return self._make_result(api_result, action, error_ctx, {})
 
-                return StepResult(
-                    success=api_result.success,
-                    error_code=api_result.error_code,
-                    error_message=get_error_message(api_result.error_code, action, error_ctx),
-                    data={},
-                    timestamp=get_now().isoformat()
-                )
             elif action == "bio_scan":
                 client = get_bio_sensor_client()
                 if client is None:
                     return StepResult(
-                        success=False,
-                        error_code=-1,
+                        success=False, error_code=-1,
                         error_message="Bio-sensor MQTT client is not available (mqtt_enabled=false)",
-                        data={},
-                        timestamp=get_now().isoformat()
+                        data={}, timestamp=get_now().isoformat()
                     )
                 bed_key = params.get("bed_key")
                 scan_result = await client.get_valid_scan_data(target_bed=self.target_bed, task_id=self.current_task_id, bed_name=bed_key)
                 logger.info(f"Bio scan result for robot {self.robot_id}: {scan_result}")
 
-                # Check if bio scan returned valid data
                 success = scan_result is not None and scan_result.get("data") is not None
                 if success:
                     logger.info(f"Bio scan completed successfully for robot {self.robot_id}")
@@ -628,26 +559,24 @@ class TaskEngine:
                     data=scan_result or {},
                     timestamp=get_now().isoformat()
                 )
+
             elif action == "wait":
                 seconds = float(params.get("seconds", "1.0"))
                 await asyncio.sleep(seconds)
-
                 return StepResult(
-                    success=True,
-                    error_code=0,
+                    success=True, error_code=0,
                     error_message="Wait completed successfully",
-                    data={"seconds": seconds},
-                    timestamp=get_now().isoformat()
+                    data={"seconds": seconds}, timestamp=get_now().isoformat()
                 )
+
             else:
                 logger.error(f"Unknown action: {action} for robot {self.robot_id}")
                 return StepResult(
-                    success=False,
-                    error_code=-1,
+                    success=False, error_code=-1,
                     error_message=f"Unknown action: {action}",
-                    data={"action": action},
-                    timestamp=get_now().isoformat()
+                    data={"action": action}, timestamp=get_now().isoformat()
                 )
+
         except grpc.aio.AioRpcError as e:
             logger.error(f"[X] gRPC error during action {action} for robot {self.robot_id}: {e.code()} - {e.details()}")
             return StepResult(
@@ -660,8 +589,7 @@ class TaskEngine:
         except ValueError as e:
             logger.error(f"[!] Robot {self.robot_id} not found: {str(e)}")
             return StepResult(
-                success=False,
-                error_code=-1,
+                success=False, error_code=-1,
                 error_message=f"Robot {self.robot_id} not found: {str(e)}",
                 data={"action": action, "params": params},
                 timestamp=get_now().isoformat()
@@ -669,69 +597,12 @@ class TaskEngine:
         except Exception as e:
             logger.error(f"[X] Unexpected error during action {action} for robot {self.robot_id}: {str(e)}", exc_info=True)
             return StepResult(
-                success=False,
-                error_code=-1,
+                success=False, error_code=-1,
                 error_message=f"Unexpected error: {str(e)}",
                 data={"action": action, "params": params},
                 timestamp=get_now().isoformat()
             )
 
-async def dispatcher():
-    logger.info("Dispatcher started. Waiting for tasks and available robots...")
-    while True:
-        task_to_assign = None
-        robot_to_assign_task_to = None
-        try:
-            task_to_assign = await global_queue.get()
-            logger.info(f"Dispatcher: Got task {task_to_assign.task_id} from global_queue.")
-
-            # Check if task has a preferred robot_id
-            if task_to_assign.robot_id:
-                preferred_robot = task_to_assign.robot_id
-                logger.info(f"Dispatcher: Task {task_to_assign.task_id} has preferred robot: {preferred_robot}")
-
-                if preferred_robot not in task_queues:
-                    logger.error(f"Dispatcher: Preferred robot '{preferred_robot}' has no task queue (not registered). Failing task.")
-                    task_to_assign.status = TaskStatus.FAILED
-                    tasks_db[task_to_assign.task_id] = task_to_assign
-                    continue
-
-                robot_specific_queue = task_queues[preferred_robot]
-                task_to_assign.status = TaskStatus.QUEUED
-                await robot_specific_queue.put(task_to_assign)
-                tasks_db[task_to_assign.task_id] = task_to_assign
-                logger.info(f"Dispatcher: Assigned task {task_to_assign.task_id} to preferred robot {preferred_robot}.")
-            else:
-                logger.info(f"Dispatcher: Task {task_to_assign.task_id} has no preferred robot. Assigning to any available robot.")
-                robot_to_assign_task_to = await available_robots_queue.get()
-                logger.info(f"Dispatcher: Robot {robot_to_assign_task_to} signaled availability.")
-                if robot_to_assign_task_to in task_queues and robot_to_assign_task_to not in current_tasks:
-                    robot_specific_queue = task_queues[robot_to_assign_task_to]
-                    task_to_assign.robot_id = robot_to_assign_task_to
-                    task_to_assign.status = TaskStatus.QUEUED
-                    await robot_specific_queue.put(task_to_assign)
-                    tasks_db[task_to_assign.task_id] = task_to_assign
-                    logger.info(f"Dispatcher: Assigned task {task_to_assign.task_id} to robot {robot_to_assign_task_to}.")
-                else:
-                    logger.warning(f"Dispatcher: Robot {robot_to_assign_task_to} signaled but was unsuitable or already busy. Re-queueing task {task_to_assign.task_id}.")
-                    await global_queue.put(task_to_assign)
-                    task_to_assign = None
-                    if robot_to_assign_task_to in task_queues:
-                        logger.info(f"Dispatcher: Re-adding robot {robot_to_assign_task_to} to available_robots_queue as it was suitable but task assignment failed this cycle.")
-                        await available_robots_queue.put(robot_to_assign_task_to)
-        except Exception as e:
-            logger.error(f"Dispatcher error: {str(e)}", exc_info=True)
-            if task_to_assign:
-                logger.info(f"Re-queueing task {task_to_assign.task_id} due to dispatcher error.")
-                await global_queue.put(task_to_assign)
-            if robot_to_assign_task_to and robot_to_assign_task_to in task_queues:
-                logger.info(f"Re-queueing robot {robot_to_assign_task_to} signal due to dispatcher error.")
-                await available_robots_queue.put(robot_to_assign_task_to)
-        finally:
-            if task_to_assign:
-                global_queue.task_done()
-            if robot_to_assign_task_to:
-                available_robots_queue.task_done()
 
 async def task_worker(robot_id: str):
     queue = task_queues[robot_id]
