@@ -101,6 +101,14 @@ class TaskEngine:
                 if not shelf_id:
                     logger.warning(f"[SHELF MONITOR] Robot {self.robot_id} no longer carrying a shelf — shelf dropped!")
                     self._shelf_dropped = True
+                    # Cancel the in-flight command so the blocked _execute_step returns quickly
+                    try:
+                        client = self.fleet.manager.get_robot_client(self.robot_id)
+                        if client:
+                            await client.cancel_command()
+                            logger.info(f"[SHELF MONITOR] Cancelled current command on robot {self.robot_id}")
+                    except Exception as ce:
+                        logger.debug(f"[SHELF MONITOR] cancel_command failed (non-critical): {ce}")
                     break
             except Exception as e:
                 logger.debug(f"[SHELF MONITOR] Transient error polling shelf for robot {self.robot_id}: {e}")
@@ -123,6 +131,15 @@ class TaskEngine:
                                    error_code: int = 0):
         """Handle shelf drop: collect remaining beds, notify, record DB, send robot home."""
         await self._stop_shelf_monitor()
+
+        # Cancel any in-flight robot command immediately
+        try:
+            client = self.fleet.manager.get_robot_client(self.robot_id)
+            if client:
+                await client.cancel_command()
+                logger.info(f"[SHELF DROP] Cancelled current command on robot {self.robot_id}")
+        except Exception as ce:
+            logger.debug(f"[SHELF DROP] cancel_command failed (non-critical): {ce}")
 
         source = f"error {error_code}" if error_code else "polling monitor"
         logger.error(f"[SHELF DROP] Detected via {source} on robot {self.robot_id}, pausing task")
@@ -163,10 +180,10 @@ class TaskEngine:
                     })
                     collected_step_ids.add(skip_id)
 
-        # Future pending bio_scan steps
+        # Future unprocessed bio_scan steps (PENDING or SKIPPED due to move failure)
         for future_step in task.steps[step_index + 1:]:
             if (future_step.action == "bio_scan"
-                    and future_step.status == StepStatus.PENDING
+                    and future_step.status in (StepStatus.PENDING, StepStatus.SKIPPED)
                     and future_step.step_id not in collected_step_ids):
                 future_loc = ""
                 for ms in task.steps:
@@ -356,6 +373,11 @@ class TaskEngine:
                     step.result = step_result
                     step.status = StepStatus.SUCCESS if step_result.success else StepStatus.FAIL
 
+                    # Shelf drop detected during step execution — handle immediately
+                    if self._shelf_dropped:
+                        await self._handle_shelf_drop(task, step_index, trigger_step=step)
+                        break
+
                     if step_result.success:
                         logger.info(f"[✓] Robot {self.robot_id}, Step {step.step_id} completed successfully")
                     else:
@@ -452,7 +474,6 @@ class TaskEngine:
         action = step.action
         params = step.params
         error_ctx = self._build_error_context(params)
-        print("Robot ID: " + self.robot_id)
         try:
             if action == "speak":
                 cmd = SpeakCmd()

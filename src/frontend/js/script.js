@@ -680,15 +680,6 @@ function drawMap() {
       }
       ctx.restore();
 
-      // Origin point
-      const origin = tfROS2Canvas(gMapDesc, { x: 0, y: 0 });
-      ctx.beginPath();
-      ctx.arc(origin.x, origin.y, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = 'red';
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 1;
-      ctx.stroke();
     }
   }
 
