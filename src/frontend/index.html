@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bio Patrol | Sigma Robotics</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=2">
   <link rel="icon" href="assets/logo.png" type="image/png">
 </head>
 <body>
@@ -410,19 +410,25 @@
 
   <!-- ========== SHELF DROP ALERT MODAL ========== -->
   <div id="shelf-drop-overlay" class="alert-overlay" style="display:none">
-    <div class="alert-modal">
+    <div class="alert-modal alert-modal--wide">
       <h3>⚠️ 架子掉落警示</h3>
-      <p>架子可能掉落在 <strong id="shelf-drop-room"></strong> 附近</p>
-      <p>請找到感測器並推回初始位置，然後按下下方按鈕</p>
-      <button class="btn-premium" onclick="recoverShelf()">歸位感測器</button>
+      <div class="shelf-drop-map-wrap">
+        <canvas id="shelf-drop-map-canvas"></canvas>
+      </div>
+      <p>請依照地圖標示位置找到感測器並推回初始位置</p>
+      <div id="shelf-drop-remaining" style="display:none;margin:12px 0;"></div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+        <button class="btn-secondary" onclick="recoverShelf()">僅歸位感測器</button>
+        <button class="btn-premium" id="btn-resume-patrol" onclick="resumePatrol()">歸位並繼續巡房</button>
+      </div>
       <div id="shelf-recovery-status"></div>
     </div>
   </div>
 
   <!-- ========== SCRIPTS ========== -->
   <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
-  <script src="js/dataService.js"></script>
-  <script src="js/script.js"></script>
+  <script src="js/dataService.js?v=2"></script>
+  <script src="js/script.js?v=2"></script>
 
 </body>
 </html>

@@ -361,11 +361,6 @@ class TaskEngine:
                     else:
                         logger.warning(f"[!] Robot {self.robot_id}, Step {step.step_id} failed: {step_result.error_message} (code: {step_result.error_code})")
 
-                        # --- SHELF DROP DETECTION (error 14606 / 10001 / 11005) ---
-                        if step.action in ("move_shelf", "return_shelf") and step_result.error_code in (14606, 10001, 11005):
-                            await self._handle_shelf_drop(task, step_index, trigger_step=step, error_code=step_result.error_code)
-                            break  # Pause the task
-
                         # Handle conditional logic: add steps to skip list if this step failed
                         if step.skip_on_failure:
                             skipped_steps.update(step.skip_on_failure)

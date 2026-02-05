@@ -1,42 +1,49 @@
 # gRPC Error Handling & Retry Logic
 
-## Problem
+## 重試機制 (`retry_with_backoff`)
 
-The system experienced frequent gRPC `UNAVAILABLE` errors with "Not ready" messages during `move_shelf` operations, causing task failures.
+關鍵的機器人操作使用 exponential backoff 重試：
 
-## Solution
+| 操作 | 最大重試次數 | 說明 |
+|------|-------------|------|
+| `move_shelf` | 3 | 搬運貨架到目標位置 |
+| `return_shelf` | 3 | 歸還貨架到原位 |
+| `move_to_location` | 2 | 移動到指定地點 |
+| `dock_shelf` / `undock_shelf` | 2 | 對接/脫離貨架 |
 
-### Retry with Exponential Backoff (`task_runtime.py`)
+可重試的 gRPC error codes：`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`。
+其他 error codes 立即失敗，不重試。
 
-Critical robot operations are wrapped with retry logic:
+Backoff 公式：`delay = min(base_delay * 2^attempt, max_delay)`
 
-- `move_shelf` — 3 retries, 2.0s base delay
-- `return_shelf` — 3 retries, 2.0s base delay
-- `move_to_location` — 2 retries
-- `dock_shelf` / `undock_shelf` — 2 retries
+## 移動錯誤處理
 
-Retryable gRPC error codes: `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`.
-Non-retryable errors fail immediately.
+`move_shelf` / `return_shelf` 失敗（包含 error code 14606/10001/11005 移動中斷）走正常的 `skip_on_failure` 流程：
 
-Backoff formula: `delay = min(base_delay * 2^attempt, max_delay)`
+1. 跳過關聯的 `bio_scan` 步驟
+2. 被跳過的 bio_scan 記錄到 DB（status=N/A, details="機器人無法移動到床邊"）
+3. 巡房繼續執行下一個床位
 
-### Robot Readiness Validation (`fleet_api.py`)
+## 貨架掉落偵測
 
-- `check_robot_readiness()` validates robot state before operations
-- `wait_for_robot_ready()` polls with configurable timeout
-- Connection testing with automatic status updates
+貨架掉落**僅由背景 polling monitor 偵測**（非 error code）：
 
-### Shelf Drop Recovery
+1. `_monitor_shelf()` 每 3 秒呼叫 `get_moving_shelf_id()`
+2. 回傳空值 → 設定 `_shelf_dropped = True`
+3. 主迴圈偵測到 → `_handle_shelf_drop()`
+4. 查詢貨架位置（`get_shelves()`）→ 記錄 `shelf_pose` 到 task metadata
+5. Task 狀態設為 `SHELF_DROPPED`，機器人返回充電座
+6. Telegram 通報 + 前端彈出警示視窗（含地圖標示掉落位置）
 
-Error code 14606 triggers:
-1. Task marked as `SHELF_DROPPED`
-2. Robot returns to home location
-3. Telegram alert sent to operator
-4. UI modal shown to user
+## Robot 就緒驗證
 
-## Configuration
+- `check_robot_readiness()` 在操作前驗證機器人狀態
+- `wait_for_robot_ready()` 可配置 timeout 的 polling 等待
+- 連線測試時自動更新機器人狀態
 
-Retry parameters are set in `data/config/settings.json`:
+## 設定
+
+重試參數在 `data/config/settings.json`：
 
 ```json
 {

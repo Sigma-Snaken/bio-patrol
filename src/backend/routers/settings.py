@@ -345,6 +345,113 @@ async def recover_shelf(req: RecoverShelfRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SHELF DROP RESUME (recover + continue remaining beds)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ResumePatrolRequest(BaseModel):
+    task_id: str
+
+
+@router.post("/patrol/resume")
+async def resume_patrol(req: ResumePatrolRequest):
+    """
+    Resume patrol after shelf drop:
+    1. Reset shelf pose
+    2. Mark old task as DONE
+    3. Create new task with remaining beds
+    4. Queue via global_queue
+    """
+    old_task = tasks_db.get(req.task_id)
+    if not old_task:
+        raise HTTPException(status_code=404, detail=f"Task '{req.task_id}' not found")
+
+    meta = old_task.metadata or {}
+    if not meta.get("shelf_drop"):
+        raise HTTPException(status_code=400, detail="Task is not in shelf_dropped state")
+
+    shelf_id = meta.get("shelf_id", "")
+    remaining_beds = meta.get("remaining_beds", [])
+    if not remaining_beds:
+        raise HTTPException(status_code=400, detail="No remaining beds to resume")
+
+    # Step 1: Reset shelf pose
+    try:
+        from dependencies import get_fleet
+        from services.fleet_api import ResetShelfPoseCmd
+        fleet = get_fleet()
+        cmd = ResetShelfPoseCmd()
+        cmd.shelf_id = shelf_id
+        result = await fleet.reset_shelf_pose("kachaka", cmd)
+        if not result.success:
+            raise HTTPException(status_code=502, detail=f"Shelf reset failed: error {result.error_code}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Resume patrol - shelf reset failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Shelf reset failed: {e}")
+
+    # Step 2: Mark old task as DONE
+    old_task.status = TaskStatus.DONE
+
+    # Step 3: Build new task with remaining beds
+    steps = []
+    step_counter = 0
+    for bed in remaining_beds:
+        bed_key = bed.get("bed_key", "")
+        location_id = bed.get("location_id", "")
+        if not bed_key or not location_id:
+            continue
+
+        move_step_id = f"move_{step_counter}"
+        action_step_id = f"action_{step_counter}"
+
+        steps.append(TaskStep(
+            step_id=move_step_id,
+            action="move_shelf",
+            params={"shelf_id": shelf_id, "location_id": location_id},
+            status=StepStatus.PENDING,
+            skip_on_failure=[action_step_id],
+        ))
+        steps.append(TaskStep(
+            step_id=action_step_id,
+            action="bio_scan",
+            params={"bed_key": bed_key},
+            status=StepStatus.PENDING,
+        ))
+        step_counter += 1
+
+    if not steps:
+        raise HTTPException(status_code=400, detail="No valid beds to resume")
+
+    # Final return_shelf
+    steps.append(TaskStep(
+        step_id=f"return_{step_counter}",
+        action="return_shelf",
+        params={"shelf_id": shelf_id},
+        status=StepStatus.PENDING,
+    ))
+
+    new_task = Task(
+        task_id=generate_task_id(),
+        robot_id="kachaka",
+        steps=steps,
+        status=TaskStatus.QUEUED,
+    )
+    tasks_db[new_task.task_id] = new_task
+
+    # Step 4: Queue
+    asyncio.create_task(global_queue.put(new_task))
+    logger.info(f"Resume patrol: new task {new_task.task_id} with {len(remaining_beds)} beds (from {req.task_id})")
+
+    return {
+        "status": "ok",
+        "new_task_id": new_task.task_id,
+        "beds_count": step_counter,
+        "remaining_beds": remaining_beds,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MQTT TEST (SSE)
 # ═══════════════════════════════════════════════════════════════════════════
 

@@ -96,6 +96,11 @@ class DataService {
     return res.data;
   }
 
+  async resumePatrol(taskId) {
+    const res = await axios.post('/api/patrol/resume', { task_id: taskId });
+    return res.data;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // TASK APIs
   // ═══════════════════════════════════════════════════════════════════════════

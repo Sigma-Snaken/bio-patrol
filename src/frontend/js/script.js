@@ -214,8 +214,8 @@ function checkShelfDrop() {
     const meta = shelfDropTask.metadata || {};
     shelfDropPose = meta.shelf_pose || null;
 
-    const roomEl = document.getElementById('shelf-drop-room');
-    if (roomEl) roomEl.textContent = meta.room || meta.bed_key || 'unknown';
+    // Draw mini-map with shelf drop marker
+    drawShelfDropMiniMap();
 
     // Show remaining beds
     const remainingEl = document.getElementById('shelf-drop-remaining');
@@ -241,6 +241,70 @@ function checkShelfDrop() {
     overlay.style.display = 'none';
     shelfDropPose = null;
   }
+}
+
+function drawShelfDropMiniMap() {
+  const canvas = document.getElementById('shelf-drop-map-canvas');
+  if (!canvas || !mapState.img) return;
+
+  const wrap = canvas.parentElement;
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Fit map into canvas with padding
+  const pad = 10;
+  const scaleX = (canvas.width - pad * 2) / gMapDesc.w;
+  const scaleY = (canvas.height - pad * 2) / gMapDesc.h;
+  const scale = Math.min(scaleX, scaleY);
+  const offX = (canvas.width - gMapDesc.w * scale) / 2;
+  const offY = (canvas.height - gMapDesc.h * scale) / 2;
+
+  ctx.save();
+  ctx.translate(offX, offY);
+  ctx.scale(scale, scale);
+
+  // Draw map image
+  ctx.drawImage(mapState.img, 0, 0, gMapDesc.w, gMapDesc.h);
+
+  // Draw shelf drop marker
+  if (shelfDropPose) {
+    const dropPos = tfROS2Canvas(gMapDesc, shelfDropPose);
+    if (dropPos.x && dropPos.y) {
+      ctx.save();
+      ctx.translate(dropPos.x, dropPos.y);
+
+      // Outer glow
+      ctx.beginPath();
+      ctx.arc(0, 0, 14, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+      ctx.fill();
+
+      // Red circle
+      ctx.beginPath();
+      ctx.arc(0, 0, 8, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, 0, 4, 0, 2 * Math.PI);
+      ctx.fillStyle = 'red';
+      ctx.fill();
+
+      // White cross
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-3, -3); ctx.lineTo(3, 3);
+      ctx.moveTo(3, -3);  ctx.lineTo(-3, 3);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
 }
 
 async function recoverShelf() {

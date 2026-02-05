@@ -44,11 +44,39 @@ class RobotManager:
         logger.info(f"Registered robot {robot_id} at {url} (resolver will be initialized asynchronously)")
         return True
     
+    def _patch_resolver(self, client: aio.KachakaApiClient):
+        """Patch resolver to also match by ID and use logger instead of print()"""
+        resolver = client.resolver
+
+        def get_shelf_id_by_name(shelf_name_or_id: str) -> str:
+            for shelf in resolver.shelves:
+                if shelf.name == shelf_name_or_id:
+                    return shelf.id
+            for shelf in resolver.shelves:
+                if shelf.id == shelf_name_or_id:
+                    return shelf.id
+            logger.warning(f"Shelf not found by name or ID: {shelf_name_or_id}")
+            return shelf_name_or_id
+
+        def get_location_id_by_name(location_name_or_id: str) -> str:
+            for location in resolver.locations:
+                if location.name == location_name_or_id:
+                    return location.id
+            for location in resolver.locations:
+                if location.id == location_name_or_id:
+                    return location.id
+            logger.warning(f"Location not found by name or ID: {location_name_or_id}")
+            return location_name_or_id
+
+        resolver.get_shelf_id_by_name = get_shelf_id_by_name
+        resolver.get_location_id_by_name = get_location_id_by_name
+
     async def _initialize_resolver_async(self, robot_id: str, client: aio.KachakaApiClient):
         """Initialize robot resolver asynchronously without blocking startup"""
         try:
             # Add timeout to prevent hanging
             await asyncio.wait_for(client.update_resolver(), timeout=10.0)
+            self._patch_resolver(client)
             logger.info(f"Robot {robot_id} resolver initialized successfully")
             
             # Update robot status to online
@@ -97,6 +125,7 @@ class RobotManager:
         if config.status in ["offline", "timeout", ""]:
             try:
                 await asyncio.wait_for(client.update_resolver(), timeout=5.0)
+                self._patch_resolver(client)
                 config.status = "online"
                 logger.info(f"Robot {robot_id} resolver initialized on-demand")
                 return True
