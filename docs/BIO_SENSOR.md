@@ -33,6 +33,23 @@ With Docker Compose, set `mqtt_broker` to `"mqtt-broker"` (the container name).
 | `bio_scan_retry_count` | 19 | Max retry attempts |
 | `bio_scan_valid_status` | 4 | Status code for valid reading |
 
+## Database Schema
+
+Scan records are stored in SQLite (`data/sensor_data.db`), table `sensor_scan_data`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Primary key (auto-increment) |
+| `location_id` | TEXT | Robot target location ID |
+| `bed_name` | TEXT | Bed name (e.g. 101-1) |
+| `bpm` | REAL | Heart rate |
+| `rpm` | REAL | Respiration rate |
+| `status` | INTEGER | Sensor status code (4 = valid) |
+| `is_valid` | INTEGER | Whether the reading is valid (1/0) |
+| `retry_count` | INTEGER | Number of retries before this reading |
+| `details` | TEXT | Additional info (e.g. skip reason) |
+| `scanned_at` | TEXT | ISO timestamp |
+
 ## Testing with Mosquitto
 
 ```bash

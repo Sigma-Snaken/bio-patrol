@@ -269,7 +269,8 @@ drawMap() (每 frame):
            └────────────────────┘
                         │
         停止時機 (3 個):
-        ├── return_shelf 成功 → _stop_shelf_monitor()
+        ├── return_shelf 執行前 → _stop_shelf_monitor()
+        │   (進入 return_shelf 步驟即停止，之後不再監控)
         ├── _handle_shelf_drop() 內部呼叫
         └── run_task finally 區塊
 ```
@@ -288,8 +289,8 @@ _execute_step(step)
     │   ├── move_shelf                → retry_with_backoff (預設 3 次)
     │   │                               成功 → 啟動 shelf monitor
     │   │                               + 記住 _current_shelf_id
-    │   ├── return_shelf              → retry_with_backoff (預設 3 次)
-    │   │                               成功 → 停止 shelf monitor
+    │   ├── return_shelf              → 先停止 shelf monitor
+    │   │                               → retry_with_backoff (預設 3 次)
     │   ├── return_home               → 直接呼叫 API
     │   ├── bio_scan                  → MQTT client 取資料
     │   │                               client=None → 立即回傳失敗
