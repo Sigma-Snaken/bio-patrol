@@ -957,6 +957,7 @@ function togglePatrolBed(bedKey) {
     patrolConfig.beds_order.push({ bed_key: bedKey, enabled: true });
   }
   renderPatrolRoute();
+  autoSavePatrolConfig();
 }
 
 function setRoomBeds(bedKeys, enabled) {
@@ -972,6 +973,20 @@ function setRoomBeds(bedKeys, enabled) {
     }
   });
   renderPatrolRoute();
+  autoSavePatrolConfig();
+}
+
+let _autoSaveTimer = null;
+function autoSavePatrolConfig() {
+  if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(async () => {
+    if (!patrolConfig) return;
+    try {
+      await dataService.savePatrol(patrolConfig);
+    } catch (e) {
+      console.error('Auto-save patrol failed:', e);
+    }
+  }, 500);
 }
 
 async function savePatrolConfig() {

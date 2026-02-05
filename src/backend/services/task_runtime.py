@@ -573,15 +573,14 @@ class TaskEngine:
                     timestamp=get_now().isoformat()
                 )
             elif action == "return_shelf":
+                # Stop shelf monitor before return_shelf — no longer needed
+                await self._stop_shelf_monitor()
+
                 cmd = ReturnShelfCmd()
                 cmd.shelf_id = params["shelf_id"]
                 api_result = await retry_with_backoff(
                     lambda: self.fleet.return_shelf(self.robot_id, cmd)
                 )
-
-                # Stop shelf monitor after successful return_shelf
-                if api_result.success:
-                    await self._stop_shelf_monitor()
 
                 return StepResult(
                     success=api_result.success,

@@ -145,24 +145,22 @@
     </div>
 
     <!-- ==================== TAB 2: PATROL ==================== -->
-    <div id="view-patrol" class="tab-content no-padding">
-      <!-- Action Bar at top -->
-      <div class="action-bar">
-        <button class="btn-premium" onclick="startPatrol()">▶ Start Patrol</button>
-        <button class="btn-success" onclick="startDemoRun()">▶ Demo Run</button>
-        <button class="btn-secondary" onclick="savePatrolConfig()">Save</button>
-        <span class="save-toast" id="patrol-save-toast"></span>
-        <button class="btn-secondary" onclick="savePatrolPreset()">Save As...</button>
-        <div style="display:flex;align-items:center;gap:4px;margin-left:auto;">
-          <select id="patrol-preset-select" onchange="onPresetSelect(this.value)" style="padding:5px 8px;background:var(--panel-light);border:1px solid var(--border-subtle);color:var(--text-primary);font-family:var(--font-mono);font-size:12px;min-width:140px;">
-            <option value="">-- Presets --</option>
-          </select>
-          <button class="btn-success" onclick="setDemoPreset()" title="Set selected preset as Demo route">Set Demo</button>
-          <button class="btn-danger-sm" onclick="deletePatrolPreset()" title="Delete selected preset">✕</button>
+    <div id="view-patrol" class="tab-content">
+      <div>
+        <!-- Demo / Presets -->
+        <div class="glass-panel">
+          <h3>Demo & Presets</h3>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn-success" onclick="startDemoRun()">▶ Demo Run</button>
+            <select id="patrol-preset-select" onchange="onPresetSelect(this.value)" style="padding:6px 10px;background:var(--panel-light);border:1px solid var(--border-subtle);color:var(--text-primary);font-family:var(--font-mono);font-size:12px;min-width:140px;">
+              <option value="">-- Presets --</option>
+            </select>
+            <button class="btn-secondary" onclick="savePatrolPreset()">Save As...</button>
+            <button class="btn-success" onclick="setDemoPreset()" title="Set selected preset as Demo route">Set Demo</button>
+            <button class="btn-danger-sm" onclick="deletePatrolPreset()" title="Delete selected preset">✕</button>
+          </div>
         </div>
-      </div>
 
-      <div style="padding:16px;overflow-y:auto;height:calc(100% - 52px);">
         <!-- Patrol Bed Order (grouped by room) -->
         <div class="glass-panel">
           <h3>Patrol Route</h3>
