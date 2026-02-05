@@ -9,7 +9,6 @@ import asyncio
 import sqlite3
 from common_types import get_now
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BioSensorMQTTClient")
 
 class BioSensorMQTTClient:
