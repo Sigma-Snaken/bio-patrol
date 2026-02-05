@@ -236,7 +236,7 @@ class TaskEngine:
                                 "bpm": None,
                                 "rpm": None,
                                 "details": "貨架掉落，巡房中斷",
-                                "bed_id": getattr(self, "target_bed", ""),
+                                "location_id": getattr(self, "target_bed", ""),
                                 "bed_name": skip_step.params.get("bed_key"),
                             }
                             client._save_scan_data(
@@ -261,7 +261,7 @@ class TaskEngine:
                             "bpm": None,
                             "rpm": None,
                             "details": "貨架掉落，巡房中斷",
-                            "bed_id": remaining.params.get("location_id", ""),
+                            "location_id": remaining.params.get("location_id", ""),
                             "bed_name": remaining.params.get("bed_key"),
                         }
                         client._save_scan_data(
@@ -335,7 +335,7 @@ class TaskEngine:
                                 "bpm": None,
                                 "rpm": None,
                                 "details": "機器人無法移動到床邊",
-                                "bed_id": self.target_bed,
+                                "location_id": self.target_bed,
                                 "bed_name": step.params.get("bed_key"),
                             }
 

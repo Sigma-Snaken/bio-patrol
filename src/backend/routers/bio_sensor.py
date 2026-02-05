@@ -31,7 +31,7 @@ async def get_bio_sensor_scan_history(limit: int = 100, task_id: str = None):
         if task_id:
             search_pattern = f'{task_id}%'
             cursor.execute('''
-                SELECT id, task_id, bed_id, bed_name, timestamp, retry_count, status, bpm, rpm, is_valid, data_json, details
+                SELECT id, task_id, location_id, bed_name, timestamp, retry_count, status, bpm, rpm, is_valid, data_json, details
                 FROM sensor_scan_data
                 WHERE task_id LIKE ?
                 ORDER BY timestamp DESC, retry_count ASC
@@ -39,7 +39,7 @@ async def get_bio_sensor_scan_history(limit: int = 100, task_id: str = None):
             ''', (search_pattern, limit))
         else:
             cursor.execute('''
-                SELECT id, task_id, bed_id, bed_name, timestamp, retry_count, status, bpm, rpm, is_valid, data_json, details
+                SELECT id, task_id, location_id, bed_name, timestamp, retry_count, status, bpm, rpm, is_valid, data_json, details
                 FROM sensor_scan_data
                 ORDER BY timestamp DESC, retry_count ASC
                 LIMIT ?
@@ -53,7 +53,7 @@ async def get_bio_sensor_scan_history(limit: int = 100, task_id: str = None):
             data.append({
                 "id": row[0],
                 "task_id": row[1],
-                "bed_id": row[2],
+                "location_id": row[2],
                 "bed_name": row[3],
                 "timestamp": row[4],
                 "retry_count": row[5],

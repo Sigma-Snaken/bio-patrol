@@ -40,7 +40,7 @@ class BioSensorMQTTClient:
             CREATE TABLE IF NOT EXISTS sensor_scan_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
-                bed_id TEXT NOT NULL,
+                location_id TEXT NOT NULL,
                 bed_name TEXT NULL,
                 timestamp TEXT NOT NULL,
                 retry_count INTEGER NOT NULL,
@@ -58,6 +58,12 @@ class BioSensorMQTTClient:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Migration: rename bed_id → location_id (existing DB)
+        try:
+            cursor.execute("ALTER TABLE sensor_scan_data RENAME COLUMN bed_id TO location_id")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already renamed or doesn't exist
         conn.commit()
         conn.close()
     
@@ -98,11 +104,11 @@ class BioSensorMQTTClient:
         timestamp = get_now().isoformat()
         cursor.execute('''
             INSERT INTO sensor_scan_data
-            (task_id, bed_id, bed_name, timestamp, retry_count, status, bpm, rpm, data_json, is_valid, details)
+            (task_id, location_id, bed_name, timestamp, retry_count, status, bpm, rpm, data_json, is_valid, details)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             task_id,
-            data.get('bed_id'),
+            data.get('location_id'),
             data.get('bed_name'),
             timestamp,
             retry_count,
@@ -145,7 +151,7 @@ class BioSensorMQTTClient:
                     print("scan_data: ", data, "\n")
                     is_valid = data['status'] == VALID_STATUS and data['bpm'] > 0 and data['rpm'] > 0
                     data['details'] = '量測正常' if is_valid else '無有效量測數值'
-                    data['bed_id'] = target_bed
+                    data['location_id'] = target_bed
                     data['bed_name'] = bed_name
                     self._save_scan_data(task_id, data, retry_count, is_valid)
 
@@ -162,7 +168,7 @@ class BioSensorMQTTClient:
         # Record a failed scan entry when no MQTT data was ever received
         if not has_any_data:
             no_data = {
-                "bed_id": target_bed,
+                "location_id": target_bed,
                 "bed_name": bed_name,
                 "status": None,
                 "bpm": None,

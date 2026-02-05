@@ -207,7 +207,7 @@ const MOCK_TASK_DATA = {
         {
           step_id: 2,
           action: 'measure_bio_data',
-          parameters: { room_id: '101', bed_id: '1' },
+          parameters: { room_id: '101', location_id: '1' },
           status: 'executing'
         }
       ]

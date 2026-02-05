@@ -348,6 +348,59 @@ async function resumePatrol() {
 
 async function loadDashboardData() {
   loadLatestBioSensor();
+  loadScheduleForDashboard();
+}
+
+async function loadScheduleForDashboard() {
+  try {
+    scheduleConfig = await dataService.getSchedules();
+    renderScheduleList();
+    updateNextRunDisplay();
+  } catch (e) {
+    console.error('Failed to load schedules:', e);
+  }
+}
+
+function computeNextRun(schedules) {
+  const now = new Date();
+  let nearest = null;
+
+  for (const s of schedules) {
+    if (!s.enabled || !s.time) continue;
+    const [h, m] = s.time.split(':').map(Number);
+
+    for (let d = 0; d < 7; d++) {
+      const candidate = new Date(now);
+      candidate.setDate(candidate.getDate() + d);
+      candidate.setHours(h, m, 0, 0);
+
+      if (candidate <= now) continue;
+
+      const dow = candidate.getDay();
+      if (s.type === 'weekday' && (dow === 0 || dow === 6)) continue;
+
+      if (!nearest || candidate < nearest) {
+        nearest = candidate;
+      }
+      break;
+    }
+  }
+  return nearest;
+}
+
+function updateNextRunDisplay() {
+  const el = document.getElementById('next-run-time');
+  if (!el) return;
+  const schedules = scheduleConfig?.schedules || [];
+  const next = computeNextRun(schedules);
+  if (next) {
+    const hh = String(next.getHours()).padStart(2, '0');
+    const mm = String(next.getMinutes()).padStart(2, '0');
+    const isToday = next.toDateString() === new Date().toDateString();
+    el.textContent = isToday ? `Today ${hh}:${mm}` : `${next.toLocaleDateString('en', {weekday:'short'})} ${hh}:${mm}`;
+  } else {
+    el.textContent = '--';
+  }
 }
 
 async function loadLatestBioSensor() {
@@ -797,6 +850,7 @@ async function addSchedule() {
   try {
     await dataService.saveSchedules(scheduleConfig);
     renderScheduleList();
+    updateNextRunDisplay();
     timeInput.value = '';
   } catch (e) {
     alert('Failed to save schedule: ' + e.message);
@@ -810,6 +864,7 @@ async function removeSchedule(scheduleId) {
       scheduleConfig.schedules = scheduleConfig.schedules.filter(s => s.id !== scheduleId);
     }
     renderScheduleList();
+    updateNextRunDisplay();
   } catch (e) {
     alert('Failed to remove schedule: ' + e.message);
   }
@@ -821,6 +876,7 @@ async function toggleSchedule(scheduleId, enabled) {
   if (s) s.enabled = enabled;
   try {
     await dataService.saveSchedules(scheduleConfig);
+    updateNextRunDisplay();
   } catch (e) {
     console.error('Failed to toggle schedule:', e);
   }
@@ -1230,7 +1286,7 @@ function renderSensorTable() {
       <td>${patrol}</td>
       <td>${time}</td>
       <td>${d.bed_name || '--'}</td>
-      <td>${d.bed_id || '--'}</td>
+      <td>${d.location_id || '--'}</td>
       <td>${d.retry_count ?? '--'}</td>
       <td>${d.status ?? '--'}</td>
       <td>${d.bpm ?? '--'}</td>
@@ -1247,7 +1303,7 @@ function exportSensorCSV() {
     return;
   }
 
-  const headers = ['task_id', 'timestamp', 'bed_name', 'bed_id', 'retry_count', 'status', 'bpm', 'rpm', 'is_valid', 'details'];
+  const headers = ['task_id', 'timestamp', 'bed_name', 'location_id', 'retry_count', 'status', 'bpm', 'rpm', 'is_valid', 'details'];
   const rows = sensorData.map(d =>
     headers.map(h => JSON.stringify(d[h] ?? '')).join(',')
   );

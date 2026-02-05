@@ -29,7 +29,7 @@ def init_database(db_path):
         CREATE TABLE IF NOT EXISTS sensor_scan_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id TEXT NOT NULL,
-            bed_id TEXT NOT NULL,
+            location_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             retry_count INTEGER NOT NULL,
             status INTEGER,
@@ -49,11 +49,11 @@ def save_scan_data(db_path, task_id, data, retry_count, is_valid, timestamp):
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO sensor_scan_data 
-        (task_id, bed_id, timestamp, retry_count, status, bpm, rpm, data_json, is_valid, details)
+        (task_id, location_id, timestamp, retry_count, status, bpm, rpm, data_json, is_valid, details)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         task_id,
-        data.get('bed_id'),
+        data.get('location_id'),
         timestamp,
         retry_count,
         data.get('status'),

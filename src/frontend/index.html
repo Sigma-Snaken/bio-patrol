@@ -100,6 +100,30 @@
             </div>
           </div>
 
+          <!-- Patrol Schedule -->
+          <div class="monitor-frame" id="schedule-frame">
+            <div class="frame-header" onclick="toggleFrame('schedule-frame')">
+              <h4>Patrol Schedule <span class="toggle-icon">▼</span></h4>
+            </div>
+            <div class="frame-content">
+              <div class="next-run-display">
+                <span class="next-run-label">Next Patrol</span>
+                <span class="next-run-value" id="next-run-time">--</span>
+              </div>
+              <div id="schedule-list"></div>
+              <div style="padding:8px 14px;">
+                <div style="display:flex;gap:6px;align-items:center;">
+                  <input type="time" id="new-schedule-time" style="padding:5px 8px;background:var(--panel-light);border:1px solid var(--border-subtle);font-family:var(--font-mono);font-size:12px;flex:1;">
+                  <select id="new-schedule-type" style="padding:5px 8px;background:var(--panel-light);border:1px solid var(--border-subtle);font-family:var(--font-mono);font-size:12px;">
+                    <option value="daily">Daily</option>
+                    <option value="weekday">Weekdays</option>
+                  </select>
+                  <button class="btn-secondary" onclick="addSchedule()">+</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Quick Actions -->
           <div class="monitor-frame" id="quick-actions-frame">
             <div class="frame-header" onclick="toggleFrame('quick-actions-frame')">
@@ -139,20 +163,6 @@
       </div>
 
       <div style="padding:16px;overflow-y:auto;height:calc(100% - 52px);">
-        <!-- Schedule Section -->
-        <div class="glass-panel">
-          <h3>Patrol Schedules</h3>
-          <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
-            <input type="time" id="new-schedule-time" style="padding:6px 10px;background:var(--panel-light);border:1px solid var(--border-subtle);font-family:var(--font-mono);font-size:13px;">
-            <select id="new-schedule-type" style="padding:6px 10px;background:var(--panel-light);border:1px solid var(--border-subtle);font-family:var(--font-mono);font-size:13px;">
-              <option value="daily">Daily</option>
-              <option value="weekday">Weekdays</option>
-            </select>
-            <button class="btn-secondary" onclick="addSchedule()">+ Add</button>
-          </div>
-          <div id="schedule-list"></div>
-        </div>
-
         <!-- Patrol Bed Order (grouped by room) -->
         <div class="glass-panel">
           <h3>Patrol Route</h3>
@@ -236,7 +246,7 @@
               <th>Patrol</th>
               <th>Time</th>
               <th>Bed</th>
-              <th>Bed ID</th>
+              <th>Location ID</th>
               <th>Retry</th>
               <th>Status</th>
               <th>BPM</th>
