@@ -1099,8 +1099,50 @@ input[type="checkbox"]:checked::after {
     gap: 8px;
 }
 
-.quick-actions button {
-    flex: 1;
+.btn-action {
+    width: 100%;
+    min-height: 120px;
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    background: var(--panel-dark);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-action:hover {
+    background: var(--panel-hover);
+    color: var(--text-bright);
+    border-color: var(--border-medium);
+}
+
+.btn-action--primary {
+    color: var(--mint);
+    border-color: var(--mint-dim);
+}
+
+.btn-action--primary:hover {
+    background: var(--mint);
+    color: white;
+    box-shadow: var(--mint-glow);
+}
+
+.btn-action--accent {
+    color: var(--amber);
+    border-color: var(--border-active);
+}
+
+.btn-action--accent:hover {
+    background: var(--amber);
+    color: var(--void);
+    box-shadow: var(--amber-glow-soft);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

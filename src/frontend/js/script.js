@@ -192,10 +192,6 @@ async function fetchTaskStatus() {
     const tasksData = Array.isArray(response) ? response : (response?.data || []);
     tasks = tasksData;
 
-    // Update patrol history in dashboard if visible
-    if (currentTab === 'dashboard') {
-      renderPatrolHistory();
-    }
   } catch (e) {
     console.error('Failed to fetch tasks:', e);
   }
@@ -352,7 +348,6 @@ async function resumePatrol() {
 
 async function loadDashboardData() {
   loadLatestBioSensor();
-  renderPatrolHistory();
 }
 
 async function loadLatestBioSensor() {
@@ -370,29 +365,6 @@ async function loadLatestBioSensor() {
   } catch (e) {
     console.error('Failed to load bio sensor:', e);
   }
-}
-
-function renderPatrolHistory() {
-  const container = document.getElementById('patrol-history-list');
-  if (!container) return;
-
-  const recentTasks = tasks.slice(0, 10);
-  if (recentTasks.length === 0) {
-    container.innerHTML = '<p style="color:var(--text-muted);font-size:12px;">No patrol history yet</p>';
-    return;
-  }
-
-  container.innerHTML = recentTasks.map(t => {
-    const statusColor = t.status === 'done' ? 'var(--mint)' :
-                        t.status === 'failed' ? 'var(--coral)' :
-                        t.status === 'shelf_dropped' ? 'var(--warning)' :
-                        t.status === 'running' ? 'var(--amber)' : 'var(--text-muted)';
-    const time = t.created_at ? new Date(t.created_at).toLocaleString() : '--';
-    return `<div style="padding:6px 0;border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;font-size:12px;">
-      <span>${time}</span>
-      <span style="color:${statusColor};font-weight:600;">${t.status}</span>
-    </div>`;
-  }).join('');
 }
 
 // Quick actions
@@ -417,6 +389,8 @@ async function returnHome() {
 
 async function startDemoRun() {
   try {
+    // Defensively return shelf to home before starting
+    try { await _returnShelfQuiet(); } catch (_) {}
     const res = await dataService.startPatrol('demo');
     alert('Demo Run started!');
   } catch (e) {
@@ -426,11 +400,19 @@ async function startDemoRun() {
 
 async function startPatrol() {
   try {
+    // Defensively return shelf to home before starting
+    try { await _returnShelfQuiet(); } catch (_) {}
     const res = await dataService.startPatrol('patrol');
     alert('Patrol started!');
   } catch (e) {
     alert('Failed to start patrol: ' + (e.message || e));
   }
+}
+
+async function _returnShelfQuiet() {
+  const settings = await dataService.getSettings();
+  const shelfId = settings?.shelf_id || 'S_04';
+  await dataService.resetShelfPose(shelfId);
 }
 
 // Manual control (D-pad)

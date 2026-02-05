@@ -100,18 +100,6 @@
             </div>
           </div>
 
-          <!-- Patrol History (collapsible) -->
-          <div class="monitor-frame" id="patrol-history-frame">
-            <div class="frame-header" onclick="toggleFrame('patrol-history-frame')">
-              <h4>Patrol History <span class="toggle-icon">▼</span></h4>
-            </div>
-            <div class="frame-content" id="patrol-history-content">
-              <div class="content-pad" id="patrol-history-list">
-                <p style="color:var(--text-muted);font-size:12px;">No patrol history yet</p>
-              </div>
-            </div>
-          </div>
-
           <!-- Quick Actions -->
           <div class="monitor-frame" id="quick-actions-frame">
             <div class="frame-header" onclick="toggleFrame('quick-actions-frame')">
@@ -120,10 +108,10 @@
             <div class="frame-content">
               <div class="quick-actions">
                 <div class="action-row">
-                  <button class="btn-premium" onclick="resetShelfSensor()">歸位生理感測器</button>
+                  <button class="btn-action btn-action--primary" onclick="startDemoRun()">Demo Run</button>
                 </div>
                 <div class="action-row">
-                  <button class="btn-success" onclick="startDemoRun()">Demo Run</button>
+                  <button class="btn-action btn-action--accent" onclick="startPatrol()">Start Patrol</button>
                 </div>
               </div>
             </div>
