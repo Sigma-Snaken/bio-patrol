@@ -191,10 +191,57 @@ async function fetchTaskStatus() {
     const response = await dataService.getTasks();
     const tasksData = Array.isArray(response) ? response : (response?.data || []);
     tasks = tasksData;
-
+    updatePatrolProgress();
   } catch (e) {
     console.error('Failed to fetch tasks:', e);
   }
+}
+
+function updatePatrolProgress() {
+  const container = document.getElementById('patrol-progress');
+  if (!container) return;
+
+  // Find active or most recent patrol task
+  const activeTask = tasks.find(t => t.status === 'in_progress' || t.status === 'queued');
+  const recentDone = !activeTask ? tasks.find(t => t.status === 'done' || t.status === 'failed') : null;
+  const task = activeTask || recentDone;
+
+  if (!task || !task.steps) {
+    container.style.display = 'none';
+    return;
+  }
+
+  const bioSteps = task.steps.filter(s => s.action === 'bio_scan' || s.action === 'wait');
+  if (bioSteps.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+
+  const total = bioSteps.length;
+  const completed = bioSteps.filter(s => s.status === 'success' || s.status === 'fail' || s.status === 'skipped').length;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  document.getElementById('patrol-progress-count').textContent = `${completed} / ${total}`;
+
+  const bar = document.getElementById('patrol-progress-bar');
+  bar.style.width = `${pct}%`;
+  bar.classList.toggle('done', task.status === 'done');
+
+  const statusEl = document.getElementById('patrol-progress-status');
+  const executing = bioSteps.find(s => s.status === 'executing');
+  if (task.status === 'in_progress' && executing) {
+    statusEl.textContent = executing.params?.bed_key ? `Scanning ${executing.params.bed_key}...` : 'Scanning...';
+  } else if (task.status === 'in_progress' || task.status === 'queued') {
+    statusEl.textContent = 'In progress...';
+  } else if (task.status === 'done') {
+    statusEl.textContent = 'Completed';
+  } else if (task.status === 'failed') {
+    statusEl.textContent = 'Failed';
+  } else {
+    statusEl.textContent = '';
+  }
+
+  container.style.display = '';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

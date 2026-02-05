@@ -1170,6 +1170,60 @@ input[type="checkbox"]:checked::after {
     box-shadow: var(--amber-glow-soft);
 }
 
+/* Patrol Progress */
+.patrol-progress {
+    padding: 12px 14px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.patrol-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.patrol-progress-label {
+    font-family: var(--font-display);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.patrol-progress-count {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--amber);
+}
+
+.patrol-progress-bar-track {
+    height: 6px;
+    background: var(--panel-dark);
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+}
+
+.patrol-progress-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--amber);
+    transition: width 0.4s ease;
+}
+
+.patrol-progress-bar-fill.done {
+    background: var(--mint);
+}
+
+.patrol-progress-status {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    SHELF DROP ALERT MODAL
    ═══════════════════════════════════════════════════════════════════════════ */
