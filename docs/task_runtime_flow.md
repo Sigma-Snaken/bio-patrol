@@ -4,38 +4,30 @@
 
 ---
 
-## 1. 整體調度架構 (Dispatcher + Worker)
+## 1. 整體調度架構 (submit_task + Worker)
 
 ```
                          ┌─────────────────┐
                          │   API 提交 Task  │
+                         │  (routers / scheduler)
                          └────────┬────────┘
                                   │
                                   v
                          ┌─────────────────┐
-                         │  global_queue    │
+                         │  submit_task()   │
+                         │  robot_id 預設   │
+                         │  "kachaka"       │
                          └────────┬────────┘
                                   │
-                         ┌────────v────────┐
-                         │   dispatcher()   │
-                         │  (永久 loop)     │
-                         └────────┬────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │ task.robot_id 有值?         │
-                    ├── YES ──┐                  ├── NO ──┐
-                    │         v                  │        v
-                    │  robot 有 queue?            │  等待 available_robots_queue
-                    │  ├─ NO → FAILED            │        │
-                    │  └─ YES                    │        v
-                    │     │                      │  robot 可用且不忙?
-                    │     v                      │  ├─ NO → 重新入列
-                    │  放入 robot queue           │  └─ YES
-                    │  status = QUEUED            │     │
-                    │                            │     v
-                    │                            │  放入 robot queue
-                    │                            │  status = QUEUED
-                    └────────────┬───────────────┘
+                         robot 已註冊?
+                         ├─ NO → FAILED
+                         └─ YES
+                              │
+                              v
+                    ┌─────────────────────────┐
+                    │  task_queues[robot_id]   │
+                    │  status = QUEUED         │
+                    └────────────┬─────────────┘
                                  │
                     ┌────────────v───────────────┐
                     │  task_worker(robot_id)      │
@@ -95,7 +87,6 @@ run_task(task)
 │  1. _stop_shelf_monitor()                   │
 │  2. Telegram 巡房摘要 (成功/總數)            │
 │  3. current_tasks 移除 robot                │
-│  4. available_robots_queue.put(robot_id)    │
 └─────────────────────────────────────────────┘
 ```
 
@@ -107,8 +98,8 @@ run_task(task)
 step 被標記為 skipped (因前一個 step 失敗的 skip_on_failure)
     │
     ├── step.action == "bio_scan"?
-    │   └─ YES → 寫入 DB 記錄 (status=N/A, details="機器人無法移動到床邊")
-    │            MQTT client 不可用則只 warn
+    │   └─ YES → _record_skipped_scan(step, "機器人無法移動到床邊")
+    │            (共用 helper，含 error_source/error_code 等 extra_data)
     │
     ├── step.status = SKIPPED
     ├── step.result = 帶有 conditional_skip 原因的 StepResult
@@ -185,24 +176,19 @@ _execute_step 拋出未預期的例外
                    v
      _handle_shelf_drop(task, step_index)
                    │
-     ┌─────────────┼──────────────────────────────────┐
-     │             │                                   │
-     v             v                                   v
-_stop_shelf     解析 shelf_id                     蒐集 remaining_beds
-_monitor        (從 _current_shelf_id 取得)            │
-                   │                      ┌────────────┼────────────┐
-                   v                      │            │            │
-            查詢貨架位置               目前 EXECUTING   所有未來      無 trigger_step?
-            get_shelves()              的 bio_scan     pending      └─ 目前 EXECUTING
-            找到匹配的 shelf            也加入         bio_scan        bio_scan 加入
-            → shelf_pose = {x,y,theta}                steps
-                   │                      └────────────┼────────────┘
-                   v                                   │
-          ┌────────────────────────────────┐            │
-          │ task.metadata = {              │            │
-          │   shelf_drop: true,            │            │
-          │   shelf_id,                    │            │
-          │   shelf_pose: {x, y, theta},  │ ◄──────────┘
+     ┌─────────────┼──────────────────────────┐
+     │             │                           │
+     v             v                           v
+_stop_shelf   _query_shelf_pose()      _collect_remaining_beds()
+_monitor      查詢貨架座標              蒐集未巡床位
+              → {x, y, theta}          (trigger skip + future pending)
+                   │                           │
+                   v                           │
+          ┌────────────────────────────────┐    │
+          │ task.metadata = {              │    │
+          │   shelf_drop: true,            │    │
+          │   shelf_id,                    │    │
+          │   shelf_pose: {x, y, theta},  │ ◄──┘
           │   remaining_beds: [...],       │
           │   dropped_at: "..."            │
           │ }                              │
@@ -211,10 +197,10 @@ _monitor        (從 _current_shelf_id 取得)            │
                        │
          ┌─────────────┼─────────────────┐
          v             v                  v
-  Telegram 通知    DB 記錄所有           Robot return_home
-  "貨架掉落，      被跳過的 bio_scan     (失敗只 log error)
-   請協助歸位"     (status=N/A,
-  (失敗只 log)     "貨架掉落，巡房中斷")
+  Telegram 通知    _record_skipped_scan  Robot return_home
+  "貨架掉落，      (共用 helper)         (失敗只 log error)
+   請協助歸位"     所有 bio_scan 統一
+  (失敗只 log)     寫入 DB + 標記 SKIPPED
 ```
 
 ### 前端顯示
@@ -279,19 +265,21 @@ drawMap() (每 frame):
 
 ## 8. `_execute_step` 內部錯誤處理
 
+所有 robot API 呼叫的結果透過 `_make_result(api_result, action, error_ctx, data)` 統一包裝為 `StepResult`。
+
 ```
 _execute_step(step)
     │
     ├── try:
-    │   ├── speak / move_to_pose      → 直接呼叫 API
-    │   ├── move_to_location          → retry_with_backoff (max 2 次)
-    │   ├── dock_shelf / undock_shelf  → retry_with_backoff (max 2 次)
-    │   ├── move_shelf                → retry_with_backoff (預設 3 次)
+    │   ├── speak / move_to_pose      → 直接呼叫 API → _make_result()
+    │   ├── move_to_location          → retry_with_backoff (max 2 次) → _make_result()
+    │   ├── dock_shelf / undock_shelf  → retry_with_backoff (max 2 次) → _make_result()
+    │   ├── move_shelf                → retry_with_backoff (預設 3 次) → _make_result()
     │   │                               成功 → 啟動 shelf monitor
     │   │                               + 記住 _current_shelf_id
     │   ├── return_shelf              → 先停止 shelf monitor
-    │   │                               → retry_with_backoff (預設 3 次)
-    │   ├── return_home               → 直接呼叫 API
+    │   │                               → retry_with_backoff (預設 3 次) → _make_result()
+    │   ├── return_home               → 直接呼叫 API → _make_result()
     │   ├── bio_scan                  → MQTT client 取資料
     │   │                               client=None → 立即回傳失敗
     │   ├── wait                      → asyncio.sleep
