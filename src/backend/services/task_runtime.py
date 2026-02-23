@@ -382,18 +382,19 @@ class TaskEngine:
                 logger.info(f"===> Task {task.task_id} completed successfully on robot {self.robot_id}")
 
             # Collect metrics from kachaka_core controller
-            try:
-                m = await self.fleet.get_metrics(self.robot_id)
-                if task.metadata is None:
-                    task.metadata = {}
-                task.metadata["metrics"] = {
-                    "poll_count": m["poll_count"],
-                    "avg_rtt_ms": round(sum(m["poll_rtt_list"]) / len(m["poll_rtt_list"]), 1) if m["poll_rtt_list"] else 0,
-                    "poll_success_rate": round(m["poll_success_count"] / m["poll_count"], 3) if m["poll_count"] else 1.0,
-                }
-                await self.fleet.reset_metrics(self.robot_id)
-            except Exception:
-                pass
+            if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
+                try:
+                    m = await self.fleet.get_metrics(self.robot_id)
+                    if task.metadata is None:
+                        task.metadata = {}
+                    task.metadata["metrics"] = {
+                        "poll_count": m["poll_count"],
+                        "avg_rtt_ms": round(sum(m["poll_rtt_list"]) / len(m["poll_rtt_list"]), 1) if m["poll_rtt_list"] else 0,
+                        "poll_success_rate": round(m["poll_success_count"] / m["poll_count"], 3) if m["poll_count"] else 1.0,
+                    }
+                    await self.fleet.reset_metrics(self.robot_id)
+                except Exception:
+                    pass
 
         finally:
             tag = f"Task {task.task_id}"

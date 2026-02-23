@@ -107,7 +107,9 @@ async def lifespan(app: FastAPI):
 
         fleet_client = get_fleet()
         try:
-            await fleet_client.register_robot(robot_id, robot_ip, "Kachaka Care")
+            result = await fleet_client.register_robot(robot_id, robot_ip, "Kachaka Care")
+            if not result.get("ok"):
+                raise Exception(f"Registration failed: {result.get('error', 'unknown')}")
             engines[robot_id] = TaskEngine(fleet_client, robot_id)
             task_queues[robot_id] = asyncio.Queue()
             asyncio.create_task(task_worker(robot_id))

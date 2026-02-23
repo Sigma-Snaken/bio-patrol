@@ -324,11 +324,9 @@ async def recover_shelf(req: RecoverShelfRequest):
     """
     try:
         from dependencies import get_fleet
-        from services.fleet_api import ResetShelfPoseCmd
         fleet = get_fleet()
-        cmd = ResetShelfPoseCmd()
-        cmd.shelf_id = req.shelf_id
-        result = await fleet.reset_shelf_pose("kachaka", cmd)
+        client = fleet.get_raw_client("kachaka")
+        result = await asyncio.to_thread(client.reset_shelf_pose, req.shelf_id)
 
         if result.success:
             # Clear shelf_drop status from any active task
@@ -377,11 +375,9 @@ async def resume_patrol(req: ResumePatrolRequest):
     # Step 1: Reset shelf pose
     try:
         from dependencies import get_fleet
-        from services.fleet_api import ResetShelfPoseCmd
         fleet = get_fleet()
-        cmd = ResetShelfPoseCmd()
-        cmd.shelf_id = shelf_id
-        result = await fleet.reset_shelf_pose("kachaka", cmd)
+        client = fleet.get_raw_client("kachaka")
+        result = await asyncio.to_thread(client.reset_shelf_pose, shelf_id)
         if not result.success:
             raise HTTPException(status_code=502, detail=f"Shelf reset failed: error {result.error_code}")
     except HTTPException:
@@ -757,7 +753,6 @@ async def list_maps():
 async def fetch_maps_from_robot():
     """Fetch all maps from robot via get_map_list + load_map_preview and save locally."""
     from dependencies import get_fleet
-    from google.protobuf.json_format import MessageToDict
 
     fleet = get_fleet()
 
@@ -774,47 +769,44 @@ async def fetch_maps_from_robot():
         current_settings["active_map"] = ""
         save_json(SETTINGS_FILE, current_settings)
 
-    # 1. Get list of maps on robot
+    # 1. Get list of maps on robot (kachaka_core returns dict)
     try:
-        map_list = await fleet.get_map_list("kachaka")
+        map_res = await fleet.get_map_list("kachaka")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to get map list: {e}")
 
-    if not map_list:
+    maps = map_res.get("maps", [])
+    if not maps:
         return {"status": "ok", "maps": [], "message": "No maps on robot"}
 
-    # 2. Get current map id
-    try:
-        current_map_id = await fleet.get_current_map_id("kachaka")
-    except Exception:
-        current_map_id = ""
+    # 2. Get current map id (included in map_list response)
+    current_map_id = map_res.get("current_map_id", "")
 
-    # 3. Get locations (for current map)
+    # 3. Get locations (for current map) — kachaka_core returns dict
     locations = []
     try:
         loc_res = await fleet.get_locations("kachaka")
-        if loc_res:
-            for loc in loc_res:
-                loc_d = MessageToDict(loc, preserving_proto_field_name=True) if hasattr(loc, "DESCRIPTOR") else loc
+        if loc_res.get("ok"):
+            for loc in loc_res.get("locations", []):
                 locations.append({
-                    "id": loc_d.get("id", ""),
-                    "name": loc_d.get("name", ""),
-                    "pose": loc_d.get("pose", {}),
+                    "id": loc.get("id", ""),
+                    "name": loc.get("name", ""),
+                    "pose": loc.get("pose", {}),
                 })
     except Exception:
         pass
 
-    # 4. For each map, load preview and save PNG + metadata
+    # 4. For each map, load preview via raw SDK and save PNG + metadata
     saved = []
-    for entry in map_list:
-        entry_d = MessageToDict(entry, preserving_proto_field_name=True) if hasattr(entry, "DESCRIPTOR") else entry
-        robot_map_id = entry_d.get("id", "")
-        entry_name = entry_d.get("name", "")
+    client = fleet.get_raw_client("kachaka")
+    for entry in maps:
+        robot_map_id = entry.get("id", "")
+        entry_name = entry.get("name", "")
         if not robot_map_id:
             continue
 
         try:
-            map_pb = await fleet.load_map_preview("kachaka", robot_map_id)
+            map_pb = await asyncio.to_thread(client.load_map_preview, robot_map_id)
         except Exception as e:
             logger.warning(f"load_map_preview error for {robot_map_id}: {e}")
             continue
@@ -844,7 +836,6 @@ class SwitchMapRequest(BaseModel):
 async def switch_map(req: SwitchMapRequest):
     """Switch the robot to a different map and set it as Dashboard active map."""
     from dependencies import get_fleet
-    from google.protobuf.json_format import MessageToDict
 
     meta_path = os.path.join(MAPS_DIR, f"{req.map_id}.json")
     meta = load_json(meta_path, None)
@@ -857,17 +848,17 @@ async def switch_map(req: SwitchMapRequest):
 
     fleet = get_fleet()
 
-    # Switch map on robot
+    # Switch map on robot via raw SDK
     try:
-        result = await fleet.switch_map("kachaka", robot_map_id)
+        client = fleet.get_raw_client("kachaka")
+        result = await asyncio.to_thread(client.switch_map, robot_map_id)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"switch_map failed: {e}")
 
-    result_d = MessageToDict(result, preserving_proto_field_name=True) if hasattr(result, "DESCRIPTOR") else result
-    if not result_d.get("success", False):
+    if not result.success:
         raise HTTPException(
             status_code=502,
-            detail=f"switch_map error: code {result_d.get('error_code')}",
+            detail=f"switch_map error: code {result.error_code}",
         )
 
     # Set as active map in settings

@@ -48,8 +48,8 @@ async def get_all_robots(fleet: FleetAPI = Depends(get_fleet)):
 async def register_robot(robot_id: str, url: str, name: Optional[str] = None, fleet: FleetAPI = Depends(get_fleet)):
     """Register a new robot instance"""
     result = await fleet.register_robot(robot_id, url, name)
-    if not result:
-        raise HTTPException(status_code=400, detail="Failed to register robot")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=f"Failed to register robot: {result.get('error', 'unknown')}")
     return {"message": "Robot registered successfully"}
 
 @router.get("/robots/{robot_id}")
