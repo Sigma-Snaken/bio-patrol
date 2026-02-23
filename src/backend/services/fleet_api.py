@@ -1,580 +1,388 @@
-from services.robot_manager import RobotManager
-from typing import Optional, Dict
-from pydantic import BaseModel
-import time
-import logging
-import os
+"""FleetAPI — async bridge over kachaka_core for FastAPI.
+
+Every public method is ``async`` and delegates to sync kachaka_core objects
+via ``asyncio.to_thread()``, keeping the event loop unblocked.
+
+Replaces the old FleetAPI that used ``kachaka_api.aio.KachakaApiClient``
+directly.  All robot operations now flow through kachaka_core's
+KachakaConnection (pooled), RobotController (command_id verified),
+KachakaCommands (@with_retry), and KachakaQueries (@with_retry).
+"""
+
+from __future__ import annotations
+
 import asyncio
-import grpc.aio
-from settings.config import get_runtime_settings
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
+
+from kachaka_core import (
+    KachakaCommands,
+    KachakaConnection,
+    KachakaQueries,
+    RobotController,
+)
 
 logger = logging.getLogger(__name__)
 
-class DefaultCmd(BaseModel):
-    cancel_all: Optional[bool] = True
-    tts_on_success: Optional[str] = ""
-    title: Optional[str] = ""
 
-class MoveShelfCmd(DefaultCmd):
-    shelf_id: str = "S01"
-    location_id: str = "L01"
+# ---------------------------------------------------------------------------
+# Per-robot slot
+# ---------------------------------------------------------------------------
 
-class ReturnShelfCmd(DefaultCmd):
-    shelf_id: str = "S01"
+@dataclass
+class _RobotSlot:
+    """Holds all kachaka_core objects and metadata for a single robot."""
 
-class ResetShelfPoseCmd(DefaultCmd):
-    shelf_id: str = "S01"
+    robot_id: str
+    ip: str
+    name: str
+    conn: KachakaConnection
+    ctrl: RobotController
+    cmds: KachakaCommands
+    queries: KachakaQueries
+    status: str = "online"
+    last_seen: float = field(default_factory=time.time)
+    serial: str = ""
 
-class Move2LocationCmd(DefaultCmd):
-    location_id: str = "L01"
 
-class MoveToPoseCmd(DefaultCmd):
-    x: float = 0.0
-    y: float = 0.0
-    yaw: float = 0.0
-
-class SpeakCmd(DefaultCmd):
-    speak_text: str = ""
+# ---------------------------------------------------------------------------
+# FleetAPI
+# ---------------------------------------------------------------------------
 
 class FleetAPI:
-    def __init__(self):
-        self.manager = RobotManager()
+    """Async bridge: FastAPI handlers -> sync kachaka_core objects."""
 
+    def __init__(self) -> None:
+        self._robots: Dict[str, _RobotSlot] = {}
 
-    async def register_robot(self, robot_id: str, url: str, name: str = "") -> bool:
-        """Register a new robot instance"""
-        return await self.manager.register_robot(robot_id, url, name)
+    # ── helpers ───────────────────────────────────────────────────────
+
+    def _get_slot(self, robot_id: str) -> _RobotSlot:
+        slot = self._robots.get(robot_id)
+        if slot is None:
+            raise ValueError(f"Robot {robot_id} not registered")
+        return slot
+
+    # ── registration ─────────────────────────────────────────────────
+
+    async def register_robot(
+        self, robot_id: str, ip: str, name: str = ""
+    ) -> dict:
+        """Create a pooled connection, ping, start the controller."""
+
+        def _register() -> dict:
+            conn = KachakaConnection.get(ip)
+            ping = conn.ping()
+            if not ping.get("ok"):
+                return {"ok": False, "error": ping.get("error", "ping failed")}
+
+            conn.ensure_resolver()
+
+            ctrl = RobotController(conn)
+            ctrl.start()
+
+            cmds = KachakaCommands(conn)
+            queries = KachakaQueries(conn)
+
+            slot = _RobotSlot(
+                robot_id=robot_id,
+                ip=ip,
+                name=name or robot_id,
+                conn=conn,
+                ctrl=ctrl,
+                cmds=cmds,
+                queries=queries,
+                serial=ping.get("serial", ""),
+            )
+            self._robots[robot_id] = slot
+            logger.info(
+                "Registered robot %s (%s) serial=%s", robot_id, ip, slot.serial
+            )
+            return {"ok": True, "serial": slot.serial}
+
+        return await asyncio.to_thread(_register)
 
     async def unregister_robot(self, robot_id: str) -> bool:
-        """Unregister an existing robot instance"""
-        return self.manager.unregister_robot(robot_id)
+        """Stop the controller and remove the robot from the pool."""
+        slot = self._robots.pop(robot_id, None)
+        if slot is None:
+            return False
+
+        def _teardown() -> None:
+            slot.ctrl.stop()
+            KachakaConnection.remove(slot.ip)
+
+        await asyncio.to_thread(_teardown)
+        logger.info("Unregistered robot %s", robot_id)
+        return True
+
+    # ── status / metadata ────────────────────────────────────────────
 
     async def get_robot_status(self, robot_id: str) -> Optional[Dict]:
-        """Get robot status"""
-        config = self.manager.get_robot_config(robot_id)
-        if not config:
+        """Return metadata dict for one robot, or None if not found."""
+        slot = self._robots.get(robot_id)
+        if slot is None:
             return None
-        
         return {
-            "id": config.id,
-            "url": config.url,
-            "name": config.name,
-            "status": config.status,
-            "last_seen": config.last_seen
+            "id": slot.robot_id,
+            "ip": slot.ip,
+            "name": slot.name,
+            "status": slot.status,
+            "last_seen": slot.last_seen,
+            "serial": slot.serial,
         }
 
     async def get_all_robots(self) -> Dict[str, Dict]:
-        """Get all registered robots"""
-        robots = self.manager.get_all_robots()
-        print("get all robots")
-        print(robots)
+        """Return metadata dicts for every registered robot."""
         return {
-            robot_id: {
-                "id": config.id,
-                "url": config.url,
-                "name": config.name,
-                "status": config.status,
-                "last_seen": config.last_seen
+            rid: {
+                "id": s.robot_id,
+                "ip": s.ip,
+                "name": s.name,
+                "status": s.status,
+                "last_seen": s.last_seen,
+                "serial": s.serial,
             }
-            for robot_id, config in robots.items()
+            for rid, s in self._robots.items()
         }
 
-    async def wait(self, robot_id: str, seconds: str) -> bool:
-        """Wait for specified seconds"""
-        print(f"[FleetAPI] Robot {robot_id} waiting for {seconds} seconds")
-        time.sleep(float(seconds))
+    async def update_robot_status(self, robot_id: str, status: str) -> bool:
+        """Update the logical status string for a robot."""
+        slot = self._robots.get(robot_id)
+        if slot is None:
+            return False
+        slot.status = status
+        slot.last_seen = time.time()
         return True
 
-    async def get_serial_number(self, robot_id: str):
-        """Get robot serial number"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_robot_serial_number()
-        return res
+    # ── controller state / metrics ───────────────────────────────────
 
-    async def update_robot_status(self, robot_id: str, status: str) -> bool:
-        """Update robot status"""
-        return self.manager.update_robot_status(robot_id, status) 
+    async def get_controller_state(self, robot_id: str) -> dict:
+        """Thread-safe snapshot from RobotController."""
+        slot = self._get_slot(robot_id)
 
-    async def check_robot_readiness(self, robot_id: str, timeout: float = None) -> bool:
-        """Check if robot is ready to accept commands with timeout"""
-        if timeout is None:
-            cfg = get_runtime_settings()
-            timeout = cfg.get("robot_readiness_check_timeout", 8.0)
-            
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            logger.error(f"Robot {robot_id} client not found")
-            return False
-        
-        config = self.manager.get_robot_config(robot_id)
-        if not config:
-            logger.error(f"Robot {robot_id} config not found")
-            return False
-        
-        # Check if robot status is online
-        if config.status != "online":
-            logger.warning(f"Robot {robot_id} status is {config.status}, not online")
-            return False
-        
-        # Test robot connectivity with a simple command (get pose)
-        try:
-            await asyncio.wait_for(client.get_robot_pose(), timeout=timeout)
-            logger.debug(f"Robot {robot_id} readiness check passed")
-            return True
-        except asyncio.TimeoutError:
-            logger.warning(f"Robot {robot_id} readiness check timed out after {timeout}s")
-            config.status = "timeout"
-            return False
-        except grpc.aio.AioRpcError as e:
-            if e.code() == grpc.StatusCode.UNAVAILABLE:
-                logger.warning(f"Robot {robot_id} is not ready (UNAVAILABLE)")
-                config.status = "offline"
-                return False
-            else:
-                logger.error(f"Robot {robot_id} readiness check failed with gRPC error: {e.code()} - {e.details()}")
-                return False
-        except Exception as e:
-            logger.error(f"Robot {robot_id} readiness check failed: {str(e)}")
-            return False
+        def _read() -> dict:
+            st = slot.ctrl.state
+            return {
+                "battery_pct": st.battery_pct,
+                "pose_x": st.pose_x,
+                "pose_y": st.pose_y,
+                "pose_theta": st.pose_theta,
+                "is_command_running": st.is_command_running,
+                "last_updated": st.last_updated,
+            }
 
-    async def wait_for_robot_ready(self, robot_id: str, max_wait: float = None, check_interval: float = None) -> bool:
-        """Wait for robot to become ready with polling"""
-        if max_wait is None or check_interval is None:
-            cfg = get_runtime_settings()
-            if max_wait is None:
-                max_wait = cfg.get("robot_wait_for_ready_timeout", 15.0)
-            if check_interval is None:
-                check_interval = cfg.get("robot_readiness_check_interval", 2.0)
-            
-        start_time = time.time()
-        while time.time() - start_time < max_wait:
-            if await self.check_robot_readiness(robot_id, timeout=5.0):
-                return True
-            logger.info(f"Robot {robot_id} not ready, waiting {check_interval}s before retry...")
-            await asyncio.sleep(check_interval)
-        
-        logger.error(f"Robot {robot_id} did not become ready within {max_wait}s")
-        return False
+        return await asyncio.to_thread(_read)
 
-    async def get_version(self, robot_id: str):
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
+    async def get_metrics(self, robot_id: str) -> dict:
+        """Return ControllerMetrics as a dict."""
+        slot = self._get_slot(robot_id)
+        m = slot.ctrl.metrics
+        return {
+            "poll_count": m.poll_count,
+            "poll_success_count": m.poll_success_count,
+            "poll_failure_count": m.poll_failure_count,
+            "poll_rtt_list": list(m.poll_rtt_list),
+        }
 
-        res = await client.get_robot_version()
-        return res
+    async def reset_metrics(self, robot_id: str) -> None:
+        """Clear metrics on the controller."""
+        slot = self._get_slot(robot_id)
+        slot.ctrl.reset_metrics()
 
-    async def get_pose(self, robot_id: str):
-        """Get robot pose"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_robot_pose()
-        return res
+    # ── movement commands (RobotController — command_id verified) ────
 
-    async def get_battery_info(self, robot_id: str):
-        """Get robot battery info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_battery_info()
-        return res
+    async def move_to_location(
+        self,
+        robot_id: str,
+        location_name: str,
+        *,
+        timeout: float = 120.0,
+        cancel_all: bool = True,
+        tts_on_success: str = "",
+        title: str = "",
+    ) -> dict:
+        """Move robot to a named location (blocking, with command_id tracking)."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(
+            slot.ctrl.move_to_location,
+            location_name,
+            timeout=timeout,
+            cancel_all=cancel_all,
+            tts_on_success=tts_on_success,
+            title=title,
+        )
 
-    async def get_error_code(self, robot_id: str):
-        """Get robot error code"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_robot_error_code()
-        return res
+    async def move_shelf(
+        self,
+        robot_id: str,
+        shelf_name: str,
+        location_name: str,
+        *,
+        timeout: float = 120.0,
+        cancel_all: bool = True,
+        tts_on_success: str = "",
+        title: str = "",
+    ) -> dict:
+        """Pick up shelf and deliver to location (command_id verified)."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(
+            slot.ctrl.move_shelf,
+            shelf_name,
+            location_name,
+            timeout=timeout,
+            cancel_all=cancel_all,
+            tts_on_success=tts_on_success,
+            title=title,
+        )
 
-    async def get_error(self, robot_id: str):
-        """Get robot error info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_error()
-        return res
+    async def return_shelf(
+        self,
+        robot_id: str,
+        shelf_name: str = "",
+        *,
+        timeout: float = 60.0,
+        cancel_all: bool = True,
+        tts_on_success: str = "",
+        title: str = "",
+    ) -> dict:
+        """Return shelf to its home location (command_id verified)."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(
+            slot.ctrl.return_shelf,
+            shelf_name,
+            timeout=timeout,
+            cancel_all=cancel_all,
+            tts_on_success=tts_on_success,
+            title=title,
+        )
 
-    async def get_png_map(self, robot_id: str):
-        """Get robot map"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
+    async def return_home(
+        self,
+        robot_id: str,
+        *,
+        timeout: float = 60.0,
+        cancel_all: bool = True,
+        tts_on_success: str = "",
+        title: str = "",
+    ) -> dict:
+        """Return robot to charger (command_id verified)."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(
+            slot.ctrl.return_home,
+            timeout=timeout,
+            cancel_all=cancel_all,
+            tts_on_success=tts_on_success,
+            title=title,
+        )
 
-        res = await client.get_png_map()
-        return res
+    # ── simple commands (KachakaCommands — @with_retry) ──────────────
 
-    async def get_map_list(self, robot_id: str):
-        """Get list of available maps on the robot"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        return await client.get_map_list()
+    async def speak(self, robot_id: str, text: str, **kwargs: Any) -> dict:
+        """Text-to-speech on robot speaker."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.cmds.speak, text, **kwargs)
 
-    async def get_current_map_id(self, robot_id: str) -> str:
-        """Get the currently active map ID on the robot"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        return await client.get_current_map_id()
+    async def dock_shelf(self, robot_id: str, **kwargs: Any) -> dict:
+        """Dock the currently held shelf."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.cmds.dock_shelf, **kwargs)
 
-    async def switch_map(self, robot_id: str, map_id: str):
-        """Switch robot to a different map"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        return await client.switch_map(map_id)
+    async def undock_shelf(self, robot_id: str, **kwargs: Any) -> dict:
+        """Undock the currently held shelf."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.cmds.undock_shelf, **kwargs)
 
-    async def load_map_preview(self, robot_id: str, map_id: str):
-        """Load PNG preview for a specific map (without switching)"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        return await client.load_map_preview(map_id)
+    async def move_to_pose(
+        self, robot_id: str, x: float, y: float, yaw: float, **kwargs: Any
+    ) -> dict:
+        """Move to absolute map coordinate (x, y, yaw)."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(
+            slot.cmds.move_to_pose, x, y, yaw, **kwargs
+        )
 
-    async def export_map(self, robot_id: str):
-        """Export robot map""" 
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        current_map_id = await client.get_current_map_id()
-        output_file_path = os.path.join(os.getcwd(), f"{robot_id}_map_export.kmap")
-        res = await client.export_map(current_map_id, output_file_path)
-        return res
+    async def cancel_command(self, robot_id: str) -> dict:
+        """Cancel the currently running command."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.cmds.cancel_command)
 
-    async def import_map(self, robot_id: str):
-        """Import robot map""" 
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        import_file_path = os.path.join(os.getcwd(), f"normal_map_export.kmap")
-        print("------ import file path: -----")
-        print(import_file_path)
-        res = await client.import_map(import_file_path)
-        return res
+    # ── queries (KachakaQueries — @with_retry) ───────────────────────
 
-    async def get_ros_imu(self, robot_id: str):
-        """Get robot IMU info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_ros_imu()
-        return res
+    async def get_pose(self, robot_id: str) -> dict:
+        """Current robot pose on the map."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_pose)
 
-    async def get_ros_odometry(self, robot_id: str):
-        """Get robot odometry info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_ros_odometry()
-        return res
+    async def get_battery_info(self, robot_id: str) -> dict:
+        """Battery percentage and charging status."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_battery)
 
-    async def get_ros_wheel_odometry(self, robot_id: str):
-        """Get robot wheel odometry info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_ros_wheel_odometry()
-        return res
+    async def get_locations(self, robot_id: str) -> dict:
+        """All registered locations."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.list_locations)
 
-    async def get_ros_laser_scan(self, robot_id: str):
-        """Get robot laser scan info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_ros_laser_scan()
-        return res
+    async def get_shelves(self, robot_id: str) -> dict:
+        """All registered shelves."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.list_shelves)
 
-    async def get_front_camera_ros_info(self, robot_id: str):
-        """Get front camera info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_front_camera_ros_info()
-        return res
+    async def get_moving_shelf(self, robot_id: str) -> dict:
+        """ID of the shelf the robot is currently carrying."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_moving_shelf)
 
-    async def get_front_camera_ros_image(self, robot_id: str):
-        """Get front camera image"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_front_camera_ros_image()
-        return res
+    async def get_command_state(self, robot_id: str) -> dict:
+        """Current command execution state."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_command_state)
 
-    async def get_front_camera_ros_compressed(self, robot_id: str):
-        """Get front camera compressed image"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_front_camera_ros_compressed()
-        return res
+    async def get_last_command_result(self, robot_id: str) -> dict:
+        """Result of the most recently completed command."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_last_command_result)
 
-    async def get_back_camera_ros_info(self, robot_id: str):
-        """Get back camera info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_back_camera_ros_info()
-        return res
+    async def get_errors(self, robot_id: str) -> dict:
+        """Current active errors on the robot."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_errors)
 
-    async def get_back_camera_ros_image(self, robot_id: str):
-        """Get back camera image"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_back_camera_ros_image()
-        return res
+    async def get_status(self, robot_id: str) -> dict:
+        """Full snapshot: pose, battery, command state, errors."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_status)
 
-    async def get_back_camera_ros_compressed(self, robot_id: str):
-        """Get back camera compressed image"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_back_camera_ros_compressed()
-        return res
+    async def get_serial_number(self, robot_id: str) -> dict:
+        """Robot serial number."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_serial_number)
 
-    async def get_tof_camera_ros_info(self, robot_id: str):
-        """Get TOF camera info"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_tof_camera_ros_info()
-        return res
+    async def get_map(self, robot_id: str) -> dict:
+        """Current map as base64-encoded PNG."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_map)
 
-    async def get_tof_camera_ros_image(self, robot_id: str):
-        """Get TOF camera image"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_tof_camera_ros_image()
-        return res
+    async def get_map_list(self, robot_id: str) -> dict:
+        """All available maps."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.list_maps)
 
-    async def get_tof_camera_ros_compressed(self, robot_id: str):
-        """Get TOF camera compressed image"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_tof_camera_ros_compressed()
-        return res
+    async def get_speaker_volume(self, robot_id: str) -> dict:
+        """Current speaker volume (0-10)."""
+        slot = self._get_slot(robot_id)
+        return await asyncio.to_thread(slot.queries.get_speaker_volume)
 
-    async def get_locations(self, robot_id: str):
-        """Get robot locations"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_locations()
-        return res
-        
-    async def get_shelves(self, robot_id: str):
-        """Get robot shelves"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_shelves()
-        return res
+    # ── raw SDK access ───────────────────────────────────────────────
 
-    async def get_moving_shelves_id(self, robot_id: str):
-        """Get moving shelf ID"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_moving_shelf_id()
-        return res
+    def get_raw_client(self, robot_id: str):
+        """Return the underlying KachakaApiClient for ROS/advanced endpoints.
 
-    async def get_command_state(self, robot_id: str):
-        """Get command state"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_command_state()
-        return res
-
-    async def get_last_command_result(self, robot_id: str):
-        """Get last command result"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.get_last_command_result()
-        return res
-
-    async def speak(self, robot_id: str, cmd: SpeakCmd):
-        """Speak command"""
-        client = self.manager.get_robot_client(robot_id)
-        print(client)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.speak(                        
-                        cmd.speak_text,
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def move_to_pose(self, robot_id: str, cmd: MoveToPoseCmd):
-        """Move to pose command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.move_to_pose(                        
-                        cmd.x,
-                        cmd.y,
-                        cmd.yaw,
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def move_to_location(self, robot_id: str, cmd: Move2LocationCmd):
-        """Move to location command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.move_to_location(                        
-                        cmd.location_id,
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def dock_shelf(self, robot_id: str, cmd: DefaultCmd):
-        """Dock shelf command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.dock_shelf(                        
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def undock_shelf(self, robot_id: str, cmd: DefaultCmd):
-        """Undock shelf command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.undock_shelf(                        
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def move_shelf(self, robot_id: str, cmd: MoveShelfCmd):
-        """Move shelf command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        # Ensure resolver is initialized before shelf operations
-        resolver_ready = await self.manager.ensure_robot_resolver(robot_id)
-        if not resolver_ready:
-            raise ValueError(f"Robot {robot_id} resolver not available - cannot resolve shelf/location IDs")
-        
-        # Check robot readiness before attempting shelf operations
-        if not await self.check_robot_readiness(robot_id):
-            # Try to wait for robot to become ready
-            logger.info(f"Robot {robot_id} not ready for move_shelf, waiting...")
-            if not await self.wait_for_robot_ready(robot_id):
-                raise ValueError(f"Robot {robot_id} is not ready to accept move_shelf commands")
-        
-        res = await client.move_shelf(                        
-                        cmd.shelf_id,
-                        cmd.location_id,
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def return_shelf(self, robot_id: str, cmd: ReturnShelfCmd):
-        """Return shelf command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        # Ensure resolver is initialized before shelf operations
-        resolver_ready = await self.manager.ensure_robot_resolver(robot_id)
-        if not resolver_ready:
-            raise ValueError(f"Robot {robot_id} resolver not available - cannot resolve shelf IDs")
-        
-        # Check robot readiness before attempting shelf operations
-        if not await self.check_robot_readiness(robot_id):
-            # Try to wait for robot to become ready
-            logger.info(f"Robot {robot_id} not ready for return_shelf, waiting...")
-            if not await self.wait_for_robot_ready(robot_id):
-                raise ValueError(f"Robot {robot_id} is not ready to accept return_shelf commands")
-        
-        res = await client.return_shelf(                        
-                        cmd.shelf_id,
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
-    async def reset_shelf_pose(self, robot_id: str, cmd: ResetShelfPoseCmd):
-        """Reset shelf pose command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        # Ensure resolver is initialized before shelf operations
-        resolver_ready = await self.manager.ensure_robot_resolver(robot_id)
-        if not resolver_ready:
-            raise ValueError(f"Robot {robot_id} resolver not available - cannot resolve shelf IDs")
-        
-        res = await client.reset_shelf_pose(                        
-                        shelf_id=cmd.shelf_id,
-                    )
-        return res
-
-    async def return_home(self, robot_id: str, cmd: DefaultCmd):
-        """Return home command"""
-        client = self.manager.get_robot_client(robot_id)
-        if not client:
-            raise ValueError(f"Robot {robot_id} not found")
-        
-        res = await client.return_home(                        
-                        cancel_all=cmd.cancel_all,
-                        tts_on_success=cmd.tts_on_success,
-                        title=cmd.title,
-                    )
-        return res
-
+        This is synchronous — callers are responsible for wrapping in
+        ``asyncio.to_thread()`` if needed.
+        """
+        slot = self._get_slot(robot_id)
+        return slot.conn.client
