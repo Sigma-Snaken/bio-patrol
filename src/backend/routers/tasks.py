@@ -74,10 +74,8 @@ async def cancel_task(task_id: str):
         try:
             from dependencies import get_fleet
             fleet = get_fleet()
-            client = fleet.manager.get_robot_client(task.robot_id)
-            if client:
-                await client.cancel_command()
-                logger.info(f"Sent cancel_command to robot {task.robot_id} for task {task_id}")
+            await fleet.cancel_command(task.robot_id)
+            logger.info(f"Sent cancel_command to robot {task.robot_id} for task {task_id}")
         except Exception as e:
             logger.warning(f"Failed to send cancel_command for task {task_id}: {e}")
 
