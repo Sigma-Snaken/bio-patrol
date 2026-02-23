@@ -11,6 +11,9 @@ WORKDIR /app
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
+# Copy kachaka-sdk-toolkit (local dependency)
+COPY kachaka-sdk-toolkit/ /app/kachaka-sdk-toolkit/
+
 # Install dependencies (cached layer)
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
