@@ -2,15 +2,9 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
-import grpc.aio
 from services.fleet_api import FleetAPI
-from common_types import Task, TaskStep, TaskStatus, StepStatus, StepResult, get_error_message, get_now
-from services.fleet_api import (
-    DefaultCmd, SpeakCmd, MoveToPoseCmd, Move2LocationCmd,
-    MoveShelfCmd, ReturnShelfCmd
-)
+from common_types import Task, TaskStep, TaskStatus, StepStatus, StepResult, get_now
 from dependencies import get_bio_sensor_client
-from settings.config import get_runtime_settings
 
 logger = logging.getLogger("kachaka.task_runtime")
 
@@ -36,34 +30,6 @@ async def submit_task(task: Task):
     logger.info(f"Task {task.task_id} submitted to robot {robot_id}")
 
 
-async def retry_with_backoff(func, max_retries=None, base_delay=None, max_delay=None):
-    """Retry function with exponential backoff for robot operations"""
-    # Use runtime settings defaults if not provided
-    if max_retries is None or base_delay is None or max_delay is None:
-        cfg = get_runtime_settings()
-        if max_retries is None:
-            max_retries = cfg.get("robot_max_retries", 3)
-        if base_delay is None:
-            base_delay = cfg.get("robot_retry_base_delay", 2.0)
-        if max_delay is None:
-            max_delay = cfg.get("robot_retry_max_delay", 10.0)
-
-    for attempt in range(max_retries + 1):
-        try:
-            return await func()
-        except grpc.aio.AioRpcError as e:
-            if attempt == max_retries:
-                raise e
-            if e.code() in [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.RESOURCE_EXHAUSTED]:
-                delay = min(base_delay * (2 ** attempt), max_delay)
-                logger.warning(f"gRPC error {e.code()} ({e.details()}), retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries + 1})")
-                await asyncio.sleep(delay)
-            else:
-                raise e
-        except Exception as e:
-            raise e
-
-
 class TaskEngine:
     def __init__(self, fleet_api: FleetAPI, robot_id: str):
         self.fleet = fleet_api
@@ -77,10 +43,12 @@ class TaskEngine:
     async def _refresh_name_cache(self):
         """Fetch shelf/location names from robot for readable logs"""
         try:
-            shelves = await self.fleet.get_shelves(self.robot_id)
-            self._shelf_names = {s.id: s.name for s in shelves}
-            locations = await self.fleet.get_locations(self.robot_id)
-            self._location_names = {l.id: l.name for l in locations}
+            result = await self.fleet.get_shelves(self.robot_id)
+            if result.get("ok"):
+                self._shelf_names = {s["id"]: s["name"] for s in result.get("shelves", [])}
+            result = await self.fleet.get_locations(self.robot_id)
+            if result.get("ok"):
+                self._location_names = {loc["id"]: loc["name"] for loc in result.get("locations", [])}
         except Exception as e:
             logger.warning(f"Failed to refresh name cache: {e}")
 
@@ -101,7 +69,7 @@ class TaskEngine:
     # ── Shelf monitor ─────────────────────────────────────────────────
 
     async def _monitor_shelf(self):
-        """Background coroutine that polls get_moving_shelves_id() every 3s.
+        """Background coroutine that polls get_moving_shelf() every 3s.
         Sets _shelf_dropped flag if the robot no longer carries a shelf."""
         logger.info(f"[SHELF MONITOR] Started for robot {self.robot_id}")
         while not self._shelf_monitor_stop:
@@ -109,15 +77,14 @@ class TaskEngine:
             if self._shelf_monitor_stop:
                 break
             try:
-                shelf_id = await self.fleet.get_moving_shelves_id(self.robot_id)
+                result = await self.fleet.get_moving_shelf(self.robot_id)
+                shelf_id = result.get("shelf_id") if result.get("ok") else None
                 if not shelf_id:
                     logger.warning(f"[SHELF MONITOR] Robot {self.robot_id} no longer carrying a shelf — shelf dropped!")
                     self._shelf_dropped = True
                     try:
-                        client = self.fleet.manager.get_robot_client(self.robot_id)
-                        if client:
-                            await client.cancel_command()
-                            logger.info(f"[SHELF MONITOR] Cancelled current command on robot {self.robot_id}")
+                        await self.fleet.cancel_command(self.robot_id)
+                        logger.info(f"[SHELF MONITOR] Cancelled current command on robot {self.robot_id}")
                     except Exception as ce:
                         logger.debug(f"[SHELF MONITOR] cancel_command failed (non-critical): {ce}")
                     break
@@ -142,15 +109,14 @@ class TaskEngine:
     async def _query_shelf_pose(self, shelf_id: str) -> Optional[dict]:
         """Query current shelf position from the robot."""
         try:
-            shelves = await self.fleet.get_shelves(self.robot_id)
-            from google.protobuf.json_format import MessageToDict
-            for s in shelves:
-                s_dict = MessageToDict(s, preserving_proto_field_name=True)
-                if s_dict.get("id") == shelf_id:
-                    pose = s_dict.get("pose", {})
-                    shelf_pose = {"x": pose.get("x", 0), "y": pose.get("y", 0), "theta": pose.get("theta", 0)}
-                    logger.info(f"[SHELF DROP] Shelf {shelf_id} pose: {shelf_pose}")
-                    return shelf_pose
+            result = await self.fleet.get_shelves(self.robot_id)
+            if result.get("ok"):
+                for s in result.get("shelves", []):
+                    if s.get("id") == shelf_id:
+                        pose = s.get("pose", {})
+                        shelf_pose = {"x": pose.get("x", 0), "y": pose.get("y", 0), "theta": pose.get("theta", 0)}
+                        logger.info(f"[SHELF DROP] Shelf {shelf_id} pose: {shelf_pose}")
+                        return shelf_pose
         except Exception as e:
             logger.warning(f"[SHELF DROP] Failed to get shelf pose: {e}")
         return None
@@ -231,10 +197,8 @@ class TaskEngine:
 
         # Cancel any in-flight robot command
         try:
-            client = self.fleet.manager.get_robot_client(self.robot_id)
-            if client:
-                await client.cancel_command()
-                logger.info(f"[SHELF DROP] Cancelled current command on robot {self.robot_id}")
+            await self.fleet.cancel_command(self.robot_id)
+            logger.info(f"[SHELF DROP] Cancelled current command on robot {self.robot_id}")
         except Exception as ce:
             logger.debug(f"[SHELF DROP] cancel_command failed (non-critical): {ce}")
 
@@ -285,8 +249,7 @@ class TaskEngine:
 
         # Robot return home
         try:
-            cmd = DefaultCmd()
-            await self.fleet.return_home(self.robot_id, cmd)
+            await self.fleet.return_home(self.robot_id)
             logger.info(f"[SHELF DROP] Robot {self.robot_id} sent home")
         except Exception as rh_err:
             logger.error(f"[SHELF DROP] Failed to send robot home: {rh_err}")
@@ -418,6 +381,20 @@ class TaskEngine:
                 task.status = TaskStatus.DONE
                 logger.info(f"===> Task {task.task_id} completed successfully on robot {self.robot_id}")
 
+            # Collect metrics from kachaka_core controller
+            try:
+                m = await self.fleet.get_metrics(self.robot_id)
+                if task.metadata is None:
+                    task.metadata = {}
+                task.metadata["metrics"] = {
+                    "poll_count": m["poll_count"],
+                    "avg_rtt_ms": round(sum(m["poll_rtt_list"]) / len(m["poll_rtt_list"]), 1) if m["poll_rtt_list"] else 0,
+                    "poll_success_rate": round(m["poll_success_count"] / m["poll_count"], 3) if m["poll_count"] else 1.0,
+                }
+                await self.fleet.reset_metrics(self.robot_id)
+            except Exception:
+                pass
+
         finally:
             tag = f"Task {task.task_id}"
             await self._stop_shelf_monitor()
@@ -425,12 +402,9 @@ class TaskEngine:
             # Cancelled cleanup: return shelf and go home
             if task.status == TaskStatus.CANCELLED and getattr(self, "_current_shelf_id", None):
                 try:
-                    cmd = ReturnShelfCmd()
-                    cmd.shelf_id = self._current_shelf_id
-                    await self.fleet.return_shelf(self.robot_id, cmd)
+                    await self.fleet.return_shelf(self.robot_id, self._current_shelf_id)
                     logger.info(f"[{tag}] Cancelled: returned shelf {self._current_shelf_id}")
-                    home_cmd = DefaultCmd()
-                    await self.fleet.return_home(self.robot_id, home_cmd)
+                    await self.fleet.return_home(self.robot_id)
                     logger.info(f"[{tag}] Cancelled: robot sent home")
                 except Exception as e:
                     logger.error(f"[{tag}] Cancelled cleanup error: {e}")
@@ -452,107 +426,64 @@ class TaskEngine:
 
     # ── Step execution ────────────────────────────────────────────────
 
-    def _build_error_context(self, params: Dict[str, Any]) -> Dict[str, str]:
-        """Build template context for error message placeholders"""
-        ctx: Dict[str, str] = {}
-        shelf_id = params.get("shelf_id", "")
-        if shelf_id:
-            name = self._shelf_names.get(shelf_id, shelf_id)
-            ctx["shelf"] = f"{name}({shelf_id})" if name != shelf_id else shelf_id
-        location_id = params.get("location_id", "")
-        if location_id:
-            name = self._location_names.get(location_id, location_id)
-            ctx["location"] = f"{name}({location_id})" if name != location_id else location_id
-        return ctx
-
-    def _make_result(self, api_result, action: str, error_ctx: dict, data: dict) -> StepResult:
-        """Create StepResult from a robot API result."""
+    def _make_result(self, api_result: dict, action: str, data: dict) -> StepResult:
+        """Create StepResult from a robot API result dict."""
         return StepResult(
-            success=api_result.success,
-            error_code=api_result.error_code,
-            error_message=get_error_message(api_result.error_code, action, error_ctx),
+            success=api_result.get("ok", False),
+            error_code=api_result.get("error_code", 0),
+            error_message=api_result.get("error", "") if not api_result.get("ok") else "",
             data=data,
-            timestamp=get_now().isoformat()
+            timestamp=get_now().isoformat(),
         )
 
     async def _execute_step(self, step: TaskStep, skip_reason=None) -> StepResult:
         action = step.action
         params = step.params
-        error_ctx = self._build_error_context(params)
         try:
             if action == "speak":
-                cmd = SpeakCmd()
-                cmd.speak_text = params["speak_text"]
-                api_result = await self.fleet.speak(self.robot_id, cmd)
-                return self._make_result(api_result, action, error_ctx, {"speak_text": cmd.speak_text})
+                result = await self.fleet.speak(self.robot_id, params["speak_text"])
+                return self._make_result(result, action, {"speak_text": params["speak_text"]})
 
             elif action == "move_to_pose":
-                cmd = MoveToPoseCmd()
-                cmd.x = float(params["x"])
-                cmd.y = float(params["y"])
-                cmd.yaw = float(params["yaw"])
-                api_result = await self.fleet.move_to_pose(self.robot_id, cmd)
-                return self._make_result(api_result, action, error_ctx, {"x": cmd.x, "y": cmd.y, "yaw": cmd.yaw})
+                result = await self.fleet.move_to_pose(self.robot_id, float(params["x"]), float(params["y"]), float(params["yaw"]))
+                return self._make_result(result, action, {"x": float(params["x"]), "y": float(params["y"]), "yaw": float(params["yaw"])})
 
             elif action == "move_to_location":
-                cmd = Move2LocationCmd()
-                cmd.location_id = params["location_id"]
-                api_result = await retry_with_backoff(
-                    lambda: self.fleet.move_to_location(self.robot_id, cmd),
-                    max_retries=2
-                )
-                return self._make_result(api_result, action, error_ctx, {"location_id": cmd.location_id})
+                result = await self.fleet.move_to_location(self.robot_id, params["location_id"])
+                return self._make_result(result, action, {"location_id": params["location_id"]})
 
             elif action == "dock_shelf":
-                cmd = DefaultCmd()
-                api_result = await retry_with_backoff(
-                    lambda: self.fleet.dock_shelf(self.robot_id, cmd),
-                    max_retries=2
-                )
-                return self._make_result(api_result, action, error_ctx, {})
+                result = await self.fleet.dock_shelf(self.robot_id)
+                return self._make_result(result, action, {})
 
             elif action == "undock_shelf":
-                cmd = DefaultCmd()
-                api_result = await retry_with_backoff(
-                    lambda: self.fleet.undock_shelf(self.robot_id, cmd),
-                    max_retries=2
-                )
-                return self._make_result(api_result, action, error_ctx, {})
+                result = await self.fleet.undock_shelf(self.robot_id)
+                return self._make_result(result, action, {})
 
             elif action == "move_shelf":
-                cmd = MoveShelfCmd()
-                cmd.shelf_id = params["shelf_id"]
-                cmd.location_id = params["location_id"]
-                self.target_bed = params['location_id']
+                self.target_bed = params["location_id"]
 
-                api_result = await retry_with_backoff(
-                    lambda: self.fleet.move_shelf(self.robot_id, cmd)
-                )
+                result = await self.fleet.move_shelf(self.robot_id, params["shelf_id"], params["location_id"])
 
                 # Start shelf monitor after first successful move_shelf
-                if api_result.success and self._shelf_monitor_task is None:
-                    self._current_shelf_id = cmd.shelf_id
+                if result.get("ok") and self._shelf_monitor_task is None:
+                    self._current_shelf_id = params["shelf_id"]
                     self._shelf_monitor_stop = False
                     self._shelf_dropped = False
                     self._shelf_monitor_task = asyncio.create_task(self._monitor_shelf())
 
-                return self._make_result(api_result, action, error_ctx, {"shelf_id": cmd.shelf_id, "location_id": cmd.location_id})
+                return self._make_result(result, action, {"shelf_id": params["shelf_id"], "location_id": params["location_id"]})
 
             elif action == "return_shelf":
                 # Stop shelf monitor before return_shelf — no longer needed
                 await self._stop_shelf_monitor()
 
-                cmd = ReturnShelfCmd()
-                cmd.shelf_id = params["shelf_id"]
-                api_result = await retry_with_backoff(
-                    lambda: self.fleet.return_shelf(self.robot_id, cmd)
-                )
-                return self._make_result(api_result, action, error_ctx, {"shelf_id": cmd.shelf_id})
+                result = await self.fleet.return_shelf(self.robot_id, params["shelf_id"])
+                return self._make_result(result, action, {"shelf_id": params["shelf_id"]})
 
             elif action == "return_home":
-                cmd = DefaultCmd()
-                api_result = await self.fleet.return_home(self.robot_id, cmd)
-                return self._make_result(api_result, action, error_ctx, {})
+                result = await self.fleet.return_home(self.robot_id)
+                return self._make_result(result, action, {})
 
             elif action == "bio_scan":
                 client = get_bio_sensor_client()
@@ -597,15 +528,6 @@ class TaskEngine:
                     data={"action": action}, timestamp=get_now().isoformat()
                 )
 
-        except grpc.aio.AioRpcError as e:
-            logger.error(f"[X] gRPC error during action {action} for robot {self.robot_id}: {e.code()} - {e.details()}")
-            return StepResult(
-                success=False,
-                error_code=int(e.code().value[0]) if hasattr(e.code(), 'value') else -1,
-                error_message=f"gRPC error {e.code()}: {e.details()}",
-                data={"action": action, "params": params, "grpc_code": e.code().name},
-                timestamp=get_now().isoformat()
-            )
         except ValueError as e:
             logger.error(f"[!] Robot {self.robot_id} not found: {str(e)}")
             return StepResult(
