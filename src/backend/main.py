@@ -53,7 +53,7 @@ def _setup_logging():
     # scheduler.log: cron-style scheduler
     routing = {
         "app.log": [
-            "bio_patrol", "services.fleet_api", "services.robot_manager",
+            "bio_patrol", "services.fleet_api",
             "services.telegram_service", "routers.settings", "utils",
         ],
         "task.log": [
@@ -112,14 +112,6 @@ async def lifespan(app: FastAPI):
             task_queues[robot_id] = asyncio.Queue()
             asyncio.create_task(task_worker(robot_id))
             logger.info(f"Robot '{robot_id}' registered at {robot_ip}")
-            # Fetch and cache robot error codes for richer error messages
-            try:
-                from common_types import load_robot_error_codes
-                error_codes = await fleet_client.get_error_code(robot_id)
-                load_robot_error_codes(error_codes)
-                logger.info(f"Loaded {len(error_codes)} error codes from robot '{robot_id}'")
-            except Exception as ec_err:
-                logger.warning(f"Failed to load error codes from robot '{robot_id}': {ec_err}")
         except Exception as e:
             logger.error(f"Failed to register robot '{robot_id}': {e}")
             logger.info(f"Continuing with graceful degradation for robot {robot_id}")
@@ -134,6 +126,10 @@ async def lifespan(app: FastAPI):
         if bio_sensor_client:
             bio_sensor_client.stop()
         await scheduler_service.stop()
+        try:
+            await fleet_client.unregister_robot(robot_id)
+        except Exception:
+            pass
         logger.info("Application shutdown: Clean up completed.")
     except Exception as e:
         logger.error(f"Error during application startup: {e}")
