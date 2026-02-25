@@ -1,4 +1,4 @@
-name: Build & Push Docker Image
+name: Bio Patrol Push and Build
 
 on:
   push:
