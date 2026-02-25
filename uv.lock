@@ -88,7 +88,7 @@ requires-dist = [
     { name = "grpcio", specifier = "==1.66.1" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "kachaka-api", specifier = "==3.10.6" },
-    { name = "kachaka-sdk-toolkit", editable = "../kachaka-sdk-toolkit" },
+    { name = "kachaka-sdk-toolkit", git = "https://github.com/Sigma-Snaken/kachaka-sdk-toolkit.git" },
     { name = "paho-mqtt", specifier = "==2.1.0" },
     { name = "protobuf", specifier = "==5.27.2" },
     { name = "uvicorn", specifier = "==0.34.0" },
@@ -376,27 +376,11 @@ wheels = [
 [[package]]
 name = "kachaka-sdk-toolkit"
 version = "0.1.0"
-source = { editable = "../kachaka-sdk-toolkit" }
+source = { git = "https://github.com/Sigma-Snaken/kachaka-sdk-toolkit.git#234ea9c839d2c7156d5292e1006580ab9dc7d9e5" }
 dependencies = [
     { name = "grpcio" },
     { name = "kachaka-api" },
     { name = "mcp", extra = ["cli"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "grpcio", specifier = ">=1.66" },
-    { name = "kachaka-api", specifier = ">=3.10" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.0" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-mock", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-mock", specifier = ">=3.15.1" },
 ]
 
 [[package]]
